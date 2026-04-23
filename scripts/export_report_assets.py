@@ -63,6 +63,30 @@ def format_window(start_time: str | None, end_time: str | None) -> str:
     return f"{start_time} 至 {end_time}"
 
 
+def export_authenticity_table(authenticity_audit: dict) -> None:
+    rows = []
+    for item in authenticity_audit.get("modules", []):
+        rows.append(
+            {
+                "label": item.get("label"),
+                "stage": item.get("stage"),
+                "authenticity_label": item.get("authenticity_label"),
+                "status": item.get("status"),
+                "current_data_level": item.get("current_data_level"),
+                "upstream_is_real": item.get("upstream_is_real"),
+                "output_is_modeled": item.get("output_is_modeled"),
+                "uses_proxy": item.get("uses_proxy"),
+                "fallback_detected": item.get("fallback_detected"),
+                "safe_claim": item.get("safe_claim"),
+                "avoid_claim": item.get("avoid_claim"),
+            }
+        )
+
+    table = pd.DataFrame(rows)
+    if not table.empty:
+        table.to_csv(TABLE_DIR / "数据真实性审计表.csv", index=False, encoding="utf-8-sig")
+
+
 def export_tables(
     weather: dict,
     optimization: dict,
@@ -72,6 +96,7 @@ def export_tables(
     competition_experiments: dict,
     official_cooling: dict,
     source_refresh_manifest: dict,
+    authenticity_audit: dict,
 ) -> dict:
     baseline = optimization.get("baseline_metrics", {})
     scenarios = optimization.get("scenarios", [])
@@ -114,6 +139,11 @@ def export_tables(
     district_df.to_csv(TABLE_DIR / "街区风险排行.csv", index=False, encoding="utf-8-sig")
 
     recommendation_df = pd.DataFrame(recommendations.get("recommendations", []))
+    if not recommendation_df.empty and "display_name" in recommendation_df.columns:
+        if "name" in recommendation_df.columns:
+            recommendation_df["name"] = recommendation_df["display_name"].fillna(recommendation_df["name"])
+        else:
+            recommendation_df["name"] = recommendation_df["display_name"]
     recommendation_df.to_csv(TABLE_DIR / "默认推荐点位.csv", index=False, encoding="utf-8-sig")
     recommendation_ops_df = pd.DataFrame(
         [
@@ -133,6 +163,9 @@ def export_tables(
         ]
     )
     if not recommendation_ops_df.empty:
+        recommendation_ops_df.iloc[:, 0] = [
+            item.get("display_name", item.get("name")) for item in recommendations.get("recommendations", [])
+        ]
         recommendation_ops_df.to_csv(TABLE_DIR / "推荐点位运行代理指标.csv", index=False, encoding="utf-8-sig")
 
     accessibility_df = pd.DataFrame(
@@ -519,6 +552,7 @@ def build_report_draft(
     competition_experiments: dict,
     official_cooling: dict,
     source_refresh_manifest: dict,
+    authenticity_audit: dict,
 ) -> None:
     districts = risk_summary.get("districts", [])
     top_district = districts[0]["district"] if districts else "待补充"
@@ -550,6 +584,9 @@ def build_report_draft(
     official_scope = get_accessibility_scope(accessibility, "official_operational_cooling_sites")
     worldpop_manifest = source_refresh_manifest.get("worldpop", {})
     geofabrik_manifest = source_refresh_manifest.get("geofabrik", {})
+    authenticity_overall = authenticity_audit.get("overall", {})
+    authenticity_summary = authenticity_audit.get("summary", {})
+    authenticity_modules = authenticity_audit.get("modules", [])
 
     recommendation_lines = []
     for index, site in enumerate(recommendations.get("recommendations", []), start=1):
@@ -560,10 +597,37 @@ def build_report_draft(
         )
     recommendation_text = "\n".join(recommendation_lines) if recommendation_lines else "待补充推荐点位。"
 
+    display_recommendation_lines = []
+    for index, site in enumerate(recommendations.get("recommendations", []), start=1):
+        site_name = site.get("display_name", site.get("name", site.get("poi_id")))
+        display_recommendation_lines.append(
+            f"{index}. `{site_name}`：新增覆盖高风险老年人口 `{site.get('covered_elderly_population', 0)}` 人，"
+            f"直接补盲 `{site.get('covered_cells', 0)}` 个网格，并改善 `{site.get('improved_cells', 0)}` 个网格的到达时间；"
+            f"运行适配度 `{site.get('operational_suitability', '--')}`，选择理由：{site.get('selection_reason', '综合补位')}。"
+        )
+    if display_recommendation_lines:
+        recommendation_text = "\n".join(display_recommendation_lines)
+
     ablation_lines = "\n".join(
         f"- `{item['module']}` 的 `{item['metric']}` 从 `{item['ablated_value']}` 变化到 `{item['full_value']}`，差值 `{item['delta']}`。{item['interpretation']}"
         for item in ablation_modules
     ) or "- 待补充消融实验结果。"
+
+    authenticity_lines = "\n".join(
+        f"- `{item.get('label', '--')}`：{item.get('safe_claim', '--')}"
+        for item in authenticity_modules
+    ) or "- 暂无真实性审计模块输出。"
+
+    authenticity_section = f"""
+### 2.5 数据真实性审计
+
+- 总体结论：`{authenticity_overall.get('verdict_label', '--')}`
+- 是否可以宣称“全部数据都是真实原始实测”：`{authenticity_overall.get('can_claim_all_data_real', False)}`
+- 安全表述：{authenticity_overall.get('competition_safe_statement', '--')}
+- 模块统计：上游真实 `{authenticity_summary.get('upstream_real_count', 0)}` / `{authenticity_summary.get('module_count', 0)}`，代理变量 `{authenticity_summary.get('proxy_count', 0)}`，回退模块 `{authenticity_summary.get('fallback_count', 0)}`
+
+{authenticity_lines}
+"""
 
     report = f"""# 《热龄卫士》研究报告
 
@@ -704,6 +768,8 @@ def build_report_draft(
 3. 风险模型虽已移除人为抬温，但仍可继续叠加更细粒度的建筑材料、树荫与独居老人数据。
 """
 
+    report = report.replace("## 3. ", f"{authenticity_section}\n## 3. ", 1)
+
     (DOCS_DIR / "研究报告-热龄卫士.md").write_text(report, encoding="utf-8")
     (DOCS_DIR / "研究报告初稿-热龄卫士.md").write_text(report, encoding="utf-8")
 
@@ -722,6 +788,7 @@ def main() -> None:
     graph_status = read_json(ROOT_DIR / "data" / "raw" / "walk_network_status.json", {})
     competition_experiments = read_json(PROCESSED_DIR / "competition_experiments.json", {})
     source_refresh_manifest = read_json(EXTERNAL_DIR / "source_refresh_manifest.json", {})
+    authenticity_audit = read_json(PROCESSED_DIR / "data_authenticity_audit.json", {})
 
     tables = export_tables(
         weather,
@@ -732,7 +799,9 @@ def main() -> None:
         competition_experiments,
         official_cooling,
         source_refresh_manifest,
+        authenticity_audit,
     )
+    export_authenticity_table(authenticity_audit)
     export_charts(tables, optimization, accessibility, competition_experiments)
     build_report_draft(
         weather,
@@ -745,6 +814,7 @@ def main() -> None:
         competition_experiments,
         official_cooling,
         source_refresh_manifest,
+        authenticity_audit,
     )
 
     print("实验图表、摘要表和报告初稿已生成。")

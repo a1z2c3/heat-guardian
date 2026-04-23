@@ -2480,6 +2480,27 @@ tbody tr:last-child td {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.evidence-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  color: var(--muted-strong);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.evidence-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(123, 183, 255, 0.32), transparent);
+}
+
 .source-card {
   background:
     linear-gradient(180deg, rgba(13, 24, 38, 0.94), rgba(8, 16, 27, 0.98)),
@@ -2514,6 +2535,46 @@ tbody tr:last-child td {
   color: var(--text);
   line-height: 1.65;
   font-size: 14px;
+}
+
+.authenticity-grid {
+  margin-top: 14px;
+}
+
+.authenticity-card {
+  background:
+    linear-gradient(180deg, rgba(11, 22, 35, 0.98), rgba(8, 15, 25, 0.98)),
+    radial-gradient(circle at 88% 12%, rgba(57, 208, 186, 0.08), transparent 28%);
+}
+
+.authenticity-copy {
+  min-width: 0;
+}
+
+.authenticity-points {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.authenticity-point {
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted-strong);
+  line-height: 1.6;
+  font-size: 13px;
+}
+
+.authenticity-point[data-tone="warning"] {
+  border-color: rgba(242, 185, 103, 0.22);
+  color: #ffd9a3;
+}
+
+.authenticity-point[data-tone="avoid"] {
+  border-color: rgba(255, 126, 100, 0.26);
+  color: #ffc0b0;
 }
 
 .text-link {

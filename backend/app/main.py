@@ -8,6 +8,7 @@ from backend.app.data_loader import (
     load_accessibility_summary,
     load_competition_experiments,
     load_config,
+    load_data_authenticity,
     load_official_cooling,
     load_optimization_experiments,
     load_poi_summary,
@@ -51,6 +52,11 @@ def data_sources() -> dict:
     return load_source_refresh_manifest()
 
 
+@app.get("/api/data-authenticity")
+def data_authenticity() -> dict:
+    return load_data_authenticity()
+
+
 @app.get("/api/accessibility/summary")
 def accessibility_summary() -> dict:
     return load_accessibility_summary()
@@ -88,6 +94,7 @@ def dashboard() -> dict:
         "project_name": config.get("project_name", "热龄卫士"),
         "study_area": config.get("study_area", {}),
         "data_sources": load_source_refresh_manifest(),
+        "data_authenticity": load_data_authenticity(),
         "weather": load_weather(),
         "poi": load_poi_summary(),
         "official_cooling": load_official_cooling(),

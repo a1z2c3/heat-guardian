@@ -69,6 +69,33 @@ def nearest_district_name(lat: float, lon: float, hotspots: list[dict]) -> str:
     return best_name
 
 
+def is_placeholder_name(name: str | None) -> bool:
+    if not name:
+        return True
+    text = name.strip()
+    if not text:
+        return True
+    if text.startswith("未命名"):
+        return True
+    return bool(re.fullmatch(r"\S+\d{6,}", text))
+
+
+def build_display_name(facility: dict, district: str) -> str:
+    name = str(facility.get("name") or "").strip()
+    if not is_placeholder_name(name):
+        return name
+
+    category_label = facility.get("category_label") or CANDIDATE_CATEGORY_LABELS.get(facility.get("category"), "候选点")
+    suffix = str(facility.get("id") or "")[-4:]
+    if district and suffix:
+        return f"{district}{category_label}候选点 {suffix}"
+    if district:
+        return f"{district}{category_label}候选点"
+    if suffix:
+        return f"{category_label}候选点 {suffix}"
+    return f"{category_label}候选点"
+
+
 def get_opening_hours_text(facility: dict) -> str | None:
     opening_hours = facility.get("opening_hours")
     if opening_hours:
@@ -216,6 +243,7 @@ def build_candidate_profile(
     service_window_score = infer_service_window_score(facility)
     access_openness_score = infer_access_openness_score(facility)
     district_priority_score = district_priority_map.get(district, 1.0)
+    display_name = build_display_name(facility, district)
 
     normalized_capacity = clamp(capacity_units / 10, 0.3, 1.0)
     operational_suitability = (
@@ -227,6 +255,7 @@ def build_candidate_profile(
 
     return {
         "district": district,
+        "display_name": display_name,
         "capacity_units": capacity_units,
         "cooling_readiness_score": round(cooling_readiness_score, 3),
         "service_window_score": round(service_window_score, 3),
@@ -672,6 +701,7 @@ def build_selected_site_details(
             {
                 "poi_id": facility["id"],
                 "name": facility["name"],
+                "display_name": facility.get("display_name", facility["name"]),
                 "category": facility["category"],
                 "category_label": facility["category_label"],
                 "district": facility.get("district"),

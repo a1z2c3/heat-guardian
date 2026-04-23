@@ -1,4 +1,5 @@
 import build_accessibility
+import build_data_authenticity_audit
 import build_risk_model
 import export_report_assets
 import fetch_poi
@@ -21,6 +22,7 @@ def main() -> None:
     build_risk_model.main()
     recommend_sites.main()
     run_competition_experiments.main()
+    build_data_authenticity_audit.main()
     export_report_assets.main()
     print("项目数据流水线执行完成。")
 

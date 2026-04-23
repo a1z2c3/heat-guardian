@@ -454,6 +454,41 @@ function humanizeSourceStatus(value) {
   return map[value] || value || "--";
 }
 
+function humanizeAuditStatus(value) {
+  const map = {
+    ok: "上游真实",
+    warning: "真实输入 + 模型说明",
+    fallback: "已触发回退",
+  };
+  return map[value] || value || "--";
+}
+
+function humanizeAuditStage(value) {
+  const map = {
+    upstream_input: "上游输入",
+    upstream_processing: "处理层",
+    derived_output: "模型输出",
+  };
+  return map[value] || value || "--";
+}
+
+function humanizeAuditLevel(value) {
+  if (!value) return "--";
+  const dataLevel = humanizeDataLevel(value);
+  if (dataLevel !== value) return dataLevel;
+  const profileType = humanizeProfileType(value);
+  if (profileType !== value) return profileType;
+  const strategy = humanizeStrategy(value);
+  if (strategy !== value) return strategy;
+  return value;
+}
+
+function getAuditTone(item) {
+  if (item?.fallback_detected) return "danger";
+  if (item?.uses_proxy || item?.output_is_modeled) return "warm";
+  return "teal";
+}
+
 function createExternalLink(label, href, className = "text-link") {
   if (!href) return null;
   const link = document.createElement("a");
@@ -995,6 +1030,13 @@ function renderHeroEvidenceStrip() {
       meta: `live ${formatNumber(sourceBreakdown.live || 0)} · cached ${formatNumber(sourceBreakdown.cached_snapshot || 0)}`,
     },
     {
+      label: "Audit",
+      value: derived.authenticityOverall?.verdict_label || "真实输入 + 模型推导",
+      meta:
+        `fallback ${formatNumber(derived.authenticitySummary?.fallback_count || 0)} · ` +
+        `proxy ${formatNumber(derived.authenticitySummary?.proxy_count || 0)}`,
+    },
+    {
       label: "Pipeline",
       value: formatDateTime(latestGeneratedAt),
       meta: "启动脚本先刷新整条流水线，再启动网站",
@@ -1154,6 +1196,87 @@ function renderSourceCards(containerId, items) {
 
     if (item.href) {
       const link = createExternalLink(item.linkLabel || "查看来源", item.href);
+      if (link) {
+        card.appendChild(link);
+      }
+    }
+
+    container.appendChild(card);
+  });
+}
+
+function renderAuthenticityCards(containerId, items) {
+  const container = byId(containerId);
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (!items.length) {
+    renderEmptyBlock(containerId, "暂无数据真实性审计结果。");
+    return;
+  }
+
+  items.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "source-card authenticity-card";
+    card.dataset.tone = getAuditTone(item);
+
+    const head = document.createElement("div");
+    head.className = "source-card-head";
+
+    const copy = document.createElement("div");
+    copy.className = "authenticity-copy";
+
+    const title = document.createElement("strong");
+    title.textContent = item.label || "--";
+
+    const meta = document.createElement("small");
+    meta.textContent =
+      `${humanizeAuditStage(item.stage)} · ${item.authenticity_label || "--"} · ` +
+      `${humanizeAuditLevel(item.current_data_level)}${item.checked_at ? ` · ${formatDateTime(item.checked_at)}` : ""}`;
+
+    copy.append(title, meta);
+
+    const badge = document.createElement("span");
+    badge.className = "action-tag";
+    badge.textContent = humanizeAuditStatus(item.status);
+
+    head.append(copy, badge);
+
+    const claim = document.createElement("p");
+    claim.textContent = item.safe_claim || item.authenticity_label || "--";
+
+    const points = document.createElement("div");
+    points.className = "authenticity-points";
+
+    const pointItems = [];
+    if (item.evidence?.[0]) {
+      pointItems.push({ tone: "default", text: item.evidence[0] });
+    }
+    if (item.warnings?.length) {
+      pointItems.push({ tone: "warning", text: `注意：${item.warnings[0]}` });
+    }
+    if (item.avoid_claim) {
+      pointItems.push({ tone: "avoid", text: `避免表述：${item.avoid_claim}` });
+    }
+
+    pointItems.slice(0, 3).forEach((entry) => {
+      const point = document.createElement("div");
+      point.className = "authenticity-point";
+      if (entry.tone !== "default") {
+        point.dataset.tone = entry.tone;
+      }
+      point.textContent = entry.text;
+      points.appendChild(point);
+    });
+
+    card.append(head, claim);
+
+    if (pointItems.length) {
+      card.appendChild(points);
+    }
+
+    if (item.source_urls?.[0]) {
+      const link = createExternalLink("查看上游来源", item.source_urls[0]);
       if (link) {
         card.appendChild(link);
       }
@@ -1465,6 +1588,10 @@ function buildDerivedState() {
   const dashboard = appState.dashboard || {};
   const grid = appState.grid || { features: [] };
   const dataSources = dashboard.data_sources || {};
+  const authenticity = dashboard.data_authenticity || {};
+  const authenticityOverall = authenticity.overall || {};
+  const authenticitySummary = authenticity.summary || {};
+  const authenticityModules = authenticity.modules || [];
   const optimization = dashboard.optimization || {};
   const weather = dashboard.weather || {};
   const forecast = weather.forecast || {};
@@ -1478,7 +1605,7 @@ function buildDerivedState() {
   const officialCooling = dashboard.official_cooling || {};
   const officialSites = (officialCooling.sites || []).map((item, index) => ({
     ...item,
-    displayName: normalizePoiName(item.name, normalizePoiCategory(item), index),
+    displayName: item.display_name || normalizePoiName(item.name, normalizePoiCategory(item), index),
     displayCategory: normalizePoiCategory(item),
   }));
   const officialBulletins = officialCooling.bulletins || [];
@@ -1498,7 +1625,7 @@ function buildDerivedState() {
   const firstFeature = (grid.features || [])[0] || {};
   const selectedSites = (selectedScenario?.selected_sites || []).map((item, index) => ({
     ...item,
-    displayName: normalizePoiName(item.name, normalizePoiCategory(item), index),
+    displayName: item.display_name || normalizePoiName(item.name, normalizePoiCategory(item), index),
     displayCategory: normalizePoiCategory(item),
   }));
   const topCells = getTopRiskCells(grid.features || []);
@@ -1525,6 +1652,10 @@ function buildDerivedState() {
     dashboard,
     grid,
     dataSources,
+    authenticity,
+    authenticityOverall,
+    authenticitySummary,
+    authenticityModules,
     optimization,
     weather,
     forecast,
@@ -2430,7 +2561,7 @@ function renderOfficialCoolingPanel() {
   renderOfficialSiteCards("official-site-grid", derived.officialSites);
 }
 
-function renderEvidenceBoard() {
+function renderEvidenceBoardLegacy() {
   const derived = buildDerivedState();
   const chip = byId("evidence-chip");
   const note = byId("evidence-note");
@@ -2438,6 +2569,9 @@ function renderEvidenceBoard() {
   const referenceNote = byId("reference-note");
   const worldpop = derived.dataSources.worldpop || {};
   const geofabrik = derived.dataSources.geofabrik || {};
+  const authenticityOverall = derived.authenticityOverall || {};
+  const authenticitySummary = derived.authenticitySummary || {};
+  const authenticityModules = derived.authenticityModules || [];
   const worldpopAge65 = (worldpop.files || {}).age65 || {};
   const geofabrikRemote = geofabrik.remote || {};
   const latestGeneratedAt =
@@ -2554,6 +2688,184 @@ function renderEvidenceBoard() {
         `${derived.dashboard.recommendations?.candidate_scope?.excluded_existing_official_sites
           ? `并自动剔除 ${formatNumber(derived.dashboard.recommendations.candidate_scope.excluded_existing_official_sites)} 个重叠候选场地。`
           : "避免把已开放点位重复推荐成“新增方案”。"}`,
+    },
+  ]);
+
+  renderReferenceLinks(
+    "reference-link-list",
+    EXTERNAL_REFERENCE_LINKS.map((item) => ({
+      name: item.title,
+      meta: item.meta,
+      value: item.value,
+      href: item.href,
+      linkLabel: "打开链接",
+    }))
+  );
+}
+
+function renderEvidenceBoard() {
+  const derived = buildDerivedState();
+  const chip = byId("evidence-chip");
+  const note = byId("evidence-note");
+  const referenceChip = byId("reference-chip");
+  const referenceNote = byId("reference-note");
+  const worldpop = derived.dataSources.worldpop || {};
+  const geofabrik = derived.dataSources.geofabrik || {};
+  const authenticityOverall = derived.authenticityOverall || {};
+  const authenticitySummary = derived.authenticitySummary || {};
+  const authenticityModules = derived.authenticityModules || [];
+  const authenticityStatement =
+    authenticityOverall.competition_safe_statement ||
+    "当前版本应表述为“真实公开数据输入 + 模型推导输出”，不应宣称全部结果都是原始实测。";
+  const shortVerdict =
+    authenticityOverall.recommended_short_answer ||
+    authenticityOverall.verdict_label ||
+    "真实公开数据 + 模型推导";
+  const worldpopAge65 = (worldpop.files || {}).age65 || {};
+  const geofabrikRemote = geofabrik.remote || {};
+  const latestGeneratedAt =
+    derived.dashboard.optimization?.generated_at ||
+    derived.officialCooling?.generated_at ||
+    derived.dashboard.weather?.generated_at;
+
+  if (chip) {
+    chip.textContent = `${shortVerdict} · ${formatNumber(authenticitySummary.module_count || 0)} modules`;
+  }
+  if (note) {
+    note.textContent = authenticityStatement;
+  }
+
+  renderFocusMetrics("evidence-kpis", [
+    {
+      label: "真实性结论",
+      value: shortVerdict,
+      meta:
+        `${formatNumber(authenticitySummary.upstream_real_count || 0)} / ${formatNumber(
+          authenticitySummary.module_count || 0
+        )} 个模块保留真实上游输入`,
+    },
+    {
+      label: "Fallback 模块",
+      value: `${formatNumber(authenticitySummary.fallback_count || 0)} 个`,
+      meta: "0 表示当前未触发演示级回退数据",
+    },
+    {
+      label: "Proxy 模块",
+      value: `${formatNumber(authenticitySummary.proxy_count || 0)} 个`,
+      meta: "局地热环境、容量、时段等变量含代理构造",
+    },
+    {
+      label: "官方核验点位",
+      value: `${formatNumber(derived.officialVerifiedCount)} 个`,
+      meta:
+        `live ${formatNumber(authenticitySummary.official_live_source_count || 0)} · ` +
+        `cached ${formatNumber(authenticitySummary.official_cached_source_count || 0)}`,
+    },
+    {
+      label: "WorldPop 版本",
+      value: `${worldpop.data_year || "--"} / ${worldpop.release || "--"}`,
+      meta: `最近检查 ${formatDateTime(worldpop.checked_at)}`,
+    },
+    {
+      label: "本轮生成时间",
+      value: formatDateTime(latestGeneratedAt),
+      meta: "启动脚本会先刷新数据，再更新 API 与前端面板",
+    },
+  ]);
+
+  renderSourceCards("source-freshness-grid", [
+    {
+      title: "Open-Meteo 预报与历史热浪窗口",
+      status: "自动更新",
+      meta: `最近生成 ${formatDateTime(derived.dashboard.weather?.generated_at)}`,
+      detail:
+        derived.analysisProfileType === "historical_heatwave_case"
+          ? `当前风险推演切换到真实历史热浪案例，窗口 ${derived.analysisWindow || "--"}。`
+          : "当前风险推演直接使用未来 72 小时实时预报窗口。",
+      href: "https://open-meteo.com/",
+      linkLabel: "查看数据源",
+      tone: "warm",
+    },
+    {
+      title: "WorldPop 老年人口栅格",
+      status: humanizeSourceStatus(worldpop.status),
+      meta: `最近检查 ${formatDateTime(worldpop.checked_at)}`,
+      detail: `当前使用 CHN ${worldpop.data_year || "--"} ${worldpop.release || "--"} 的 1km 年龄结构栅格。`,
+      href: (worldpopAge65.download || {}).url,
+      linkLabel: "查看下载源",
+      tone: "teal",
+    },
+    {
+      title: "Geofabrik 湖北步行路网",
+      status: humanizeSourceStatus(geofabrik.status),
+      meta: `远端文件 ${formatRemoteTimestamp(geofabrikRemote.last_modified)}`,
+      detail: "可达性正式结果优先基于真实步行路网，不以直线距离代理替代主结果。",
+      href: geofabrik.source_url,
+      linkLabel: "查看下载源",
+      tone: "violet",
+    },
+    {
+      title: "武汉官方纳凉通报",
+      status: `监测 ${formatNumber(derived.officialBulletins.length)} 页`,
+      meta: `研究区已核验 ${formatNumber(derived.officialSites.length)} 个点位`,
+      detail:
+        `全市官方通报 ${formatNumber(derived.officialCooling.reported_citywide_cooling_point_count)} 个社区纳凉点；` +
+        `当前接入坐标来自官方地址/场馆名与 OSM 空间锚定，不是政府原始经纬度。`,
+      href: derived.officialBulletins[0]?.url,
+      linkLabel: "查看官方通报",
+      tone: "danger",
+    },
+  ]);
+
+  let authenticityGrid = byId("authenticity-grid");
+  if (!authenticityGrid) {
+    const freshnessGrid = byId("source-freshness-grid");
+    if (freshnessGrid?.parentElement) {
+      const divider = document.createElement("div");
+      divider.className = "evidence-divider";
+      divider.textContent = "Data Authenticity Audit";
+
+      authenticityGrid = document.createElement("div");
+      authenticityGrid.id = "authenticity-grid";
+      authenticityGrid.className = "source-grid authenticity-grid";
+
+      freshnessGrid.parentElement.append(divider, authenticityGrid);
+    }
+  }
+
+  renderAuthenticityCards("authenticity-grid", authenticityModules);
+
+  if (referenceChip) {
+    referenceChip.textContent = "政策 / 数据 / 论文 / GitHub";
+  }
+  if (referenceNote) {
+    referenceNote.textContent =
+      "这些外部链接用于支撑方法合理性与数据来源可信度；站内展示仍以本地自动更新后的真实输入与模型输出为准。";
+  }
+
+  renderActionCards("method-proof-list", [
+    {
+      title: "正式展示以真实步行路网为准",
+      tag: "实验二",
+      detail:
+        `距离代理平均误差 ${formatDecimal(derived.accessComparison.mean_abs_error_minutes, 1)} 分钟，` +
+        `RMSE ${formatDecimal(derived.accessComparison.rmse_minutes, 2)} 分钟，不能替代真实路网结论。`,
+    },
+    {
+      title: "完整模型能识别更多高龄暴露人口",
+      tag: "实验一",
+      detail:
+        `相对仅热暴露方案，完整模型额外识别 ${formatNumber(derived.modelGain)} 名高风险老年人口，` +
+        "说明“热 + 老 + 难到达”的复合建模是必要的。",
+    },
+    {
+      title: "官方在运点位已并入基线并做去重",
+      tag: "口径严谨",
+      detail: derived.dashboard.recommendations?.candidate_scope?.excluded_existing_official_sites
+        ? `优化前自动剔除 ${formatNumber(
+            derived.dashboard.recommendations.candidate_scope.excluded_existing_official_sites
+          )} 个与官方在运纳凉点重叠的候选场地，避免把已开放点位误写成“新增方案”。`
+        : "当前候选集中未发现需要额外剔除的官方在运重复点位。",
     },
   ]);
 
@@ -3388,7 +3700,7 @@ function renderDashboard() {
   updateSectionHud(document.body.dataset.activeSection || "section-overview");
 }
 
-async function bootstrap() {
+async function bootstrapLegacy() {
   bindRetryButton();
   setLoading(true);
   setStatus(
@@ -3439,6 +3751,73 @@ async function bootstrap() {
         `真实数据已联动，当前展示新增 ${appState.selectedScenarioCount} 点方案。`,
         "ok",
         `最近更新 ${formatDateTime(generatedAt)}，角色看板、官方通报、方案切换和推荐表已同步。`,
+        false
+      );
+    }
+  } catch (error) {
+    console.error(error);
+    setStatus(
+      "仪表盘数据加载失败。",
+      "error",
+      "请确认 FastAPI 服务已启动，并检查 `data/processed` 目录下的结果文件是否存在。",
+      true
+    );
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function bootstrap() {
+  bindRetryButton();
+  setLoading(true);
+  setStatus(
+    "正在联动真实上游数据与模型结果…",
+    "loading",
+    "优先加载仪表盘指标，其次渲染风险栅格、证据审计与方案图表。",
+    false
+  );
+
+  try {
+    const [dashboardResult, gridResult] = await Promise.allSettled([
+      getJson("/api/dashboard"),
+      getJson("/api/risk/grid"),
+    ]);
+
+    if (dashboardResult.status !== "fulfilled") {
+      throw dashboardResult.reason;
+    }
+
+    appState.dashboard = dashboardResult.value;
+    appState.grid = gridResult.status === "fulfilled" ? gridResult.value : { features: [] };
+    appState.selectedScenarioCount = appState.selectedScenarioCount || getDefaultScenarioCount(appState.dashboard);
+
+    renderDashboard();
+
+    const generatedAt =
+      appState.dashboard.optimization?.generated_at ||
+      appState.dashboard.official_cooling?.generated_at ||
+      appState.dashboard.weather?.generated_at ||
+      null;
+
+    if (gridResult.status !== "fulfilled") {
+      setStatus(
+        "仪表盘已载入，但风险栅格未返回。",
+        "warning",
+        `文本指标与真实性审计仍可使用；最近更新 ${formatDateTime(generatedAt)}。可点击“重新加载”继续尝试拉取栅格。`,
+        true
+      );
+    } else if (!window.echarts) {
+      setStatus(
+        "数据已载入，但图表库未加载。",
+        "warning",
+        `文本结果正常，图表已降级为空状态；最近更新 ${formatDateTime(generatedAt)}。`,
+        true
+      );
+    } else {
+      setStatus(
+        `真实上游数据与模型结果已同步，当前展示新增 ${appState.selectedScenarioCount} 点方案。`,
+        "ok",
+        `最近更新 ${formatDateTime(generatedAt)}；真实性审计、官方通报、方案切换与推荐表已同步。`,
         false
       );
     }

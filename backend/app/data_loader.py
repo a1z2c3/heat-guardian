@@ -35,6 +35,10 @@ def load_source_refresh_manifest() -> dict[str, Any]:
     return load_json_file(EXTERNAL_DIR / "source_refresh_manifest.json", {})
 
 
+def load_data_authenticity() -> dict[str, Any]:
+    return load_json_file(PROCESSED_DIR / "data_authenticity_audit.json", {})
+
+
 def load_risk_summary() -> dict[str, Any]:
     return load_json_file(PROCESSED_DIR / "risk_summary.json", {"districts": []})
 
