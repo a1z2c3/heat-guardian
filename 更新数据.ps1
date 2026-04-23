@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 if (!(Test-Path ".venv")) {
-  throw "未找到 .venv，请先运行 启动项目.ps1"
+  throw "Missing .venv. Please run .\\启动项目.ps1 first."
 }
 
-.\.venv\Scripts\python scripts\run_pipeline.py
+.\.venv\Scripts\python -u scripts\run_pipeline.py
