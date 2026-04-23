@@ -48,6 +48,15 @@ def weather_profile_label(weather: dict) -> str:
     return profile_type or "未标注"
 
 
+def strategy_label(strategy: str | None) -> str:
+    mapping = {
+        "mclp_capacity_readiness_fairness_hybrid": "覆盖优先 + 容量/开放时段/适配度/公平性增强",
+        "mclp_coverage_time_hybrid": "覆盖优先 + 时间优化补位",
+        "mclp_distance_proxy": "距离代理下的混合选址",
+    }
+    return mapping.get(strategy or "", strategy or "未标注")
+
+
 def format_window(start_time: str | None, end_time: str | None) -> str:
     if not start_time or not end_time:
         return "未提供"
@@ -106,6 +115,25 @@ def export_tables(
 
     recommendation_df = pd.DataFrame(recommendations.get("recommendations", []))
     recommendation_df.to_csv(TABLE_DIR / "默认推荐点位.csv", index=False, encoding="utf-8-sig")
+    recommendation_ops_df = pd.DataFrame(
+        [
+            {
+                "名称": item.get("name"),
+                "城区": item.get("district"),
+                "类型": item.get("category_label"),
+                "避暑模式": item.get("refuge_mode_label"),
+                "容量代理_单位": item.get("capacity_units"),
+                "开放时段代理": item.get("service_window_score"),
+                "开放性代理": item.get("access_openness_score"),
+                "片区优先度": item.get("district_priority_score"),
+                "运行适配度": item.get("operational_suitability"),
+                "选择理由": item.get("selection_reason"),
+            }
+            for item in recommendations.get("recommendations", [])
+        ]
+    )
+    if not recommendation_ops_df.empty:
+        recommendation_ops_df.to_csv(TABLE_DIR / "推荐点位运行代理指标.csv", index=False, encoding="utf-8-sig")
 
     accessibility_df = pd.DataFrame(
         [
@@ -339,6 +367,7 @@ def export_tables(
         "scenario_df": scenario_df,
         "district_df": district_df,
         "recommendation_df": recommendation_df,
+        "recommendation_ops_df": recommendation_ops_df,
         "accessibility_df": accessibility_df,
         "weather_context_df": weather_context_df,
         "scope_df": scope_df,
@@ -525,7 +554,9 @@ def build_report_draft(
     recommendation_lines = []
     for index, site in enumerate(recommendations.get("recommendations", []), start=1):
         recommendation_lines.append(
-            f"{index}. `{site.get('name', site.get('poi_id'))}`：新增覆盖高风险老年人口 `{site.get('covered_elderly_population', 0)}` 人，直接补盲 `{site.get('covered_cells', 0)}` 个网格，并改善 `{site.get('improved_cells', 0)}` 个网格的到达时间。"
+            f"{index}. `{site.get('name', site.get('poi_id'))}`：新增覆盖高风险老年人口 `{site.get('covered_elderly_population', 0)}` 人，"
+            f"直接补盲 `{site.get('covered_cells', 0)}` 个网格，并改善 `{site.get('improved_cells', 0)}` 个网格的到达时间；"
+            f"运行适配度 `{site.get('operational_suitability', '--')}`，选择理由：{site.get('selection_reason', '综合补位')}。"
         )
     recommendation_text = "\n".join(recommendation_lines) if recommendation_lines else "待补充推荐点位。"
 
@@ -593,9 +624,11 @@ def build_report_draft(
 ### 3.2 可达性与选址模型
 
 - 可达性模型：优先采用真实步行路网，若路网不可得才退化到距离代理
-- 选址策略：`{strategy}`
+- 选址策略：`{strategy_label(strategy)}`
 - 优化基线口径：`{baseline_scope.get('scope_label', '既有主动避暑资源')}`
 - 候选点来源：公园与图书馆等可转化公共资源
+- 运行约束增强：在覆盖收益之外，引入 `容量代理`、`开放时段代理`、`室内/绿地避暑适配度` 与 `高风险片区优先度`
+- 解释口径：上述容量与开放时段均为基于设施类型、名称与公开字段构建的相对代理，用于提升方案现实性，而非替代后续实地核验
 
 ## 4. 核心结果
 
@@ -667,7 +700,7 @@ def build_report_draft(
 ### 7.2 局限性
 
 1. 当前候选点仍主要来自公园与图书馆，后续可继续补充文化站、社区驿站等可转化场所。
-2. 虽已补充部分官方点位的开放信息，但模型尚未系统纳入所有设施容量、完整开放时段与室内降温能力等运营约束。
+2. 选址模型已纳入容量、开放时段与避暑适配度的相对代理，但仍不是实测容量、实测开放时长和空调负荷数据，正式落地前仍需街道与场馆逐点核验。
 3. 风险模型虽已移除人为抬温，但仍可继续叠加更细粒度的建筑材料、树荫与独居老人数据。
 """
 

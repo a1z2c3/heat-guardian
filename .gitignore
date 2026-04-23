@@ -16,3 +16,4 @@ data/processed/*.json
 outputs/*
 Screenshot_*.jpg
 *_720.jpg
+~$*.docx

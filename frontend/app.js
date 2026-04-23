@@ -72,16 +72,22 @@ const EXTERNAL_REFERENCE_LINKS = [
     href: "https://www.who.int/news-room/fact-sheets/detail/climate-change-heat-and-health",
   },
   {
+    title: "Nature Health · Accessible Parks",
+    meta: "论文依据 · 小而可达的城市公园可降低热相关死亡风险",
+    value: "查看 Nature Health 论文",
+    href: "https://www.nature.com/articles/s44360-025-00036-3",
+  },
+  {
+    title: "Cooling Center Siting Study",
+    meta: "论文依据 · 冷却中心布点需考虑脆弱人群与可达性",
+    value: "查看开放论文",
+    href: "https://pmc.ncbi.nlm.nih.gov/articles/PMC10576472/",
+  },
+  {
     title: "WorldPop Age-Sex Structures",
     meta: "数据依据 · 年龄结构栅格的官方发布说明",
     value: "查看 WorldPop 发布说明",
     href: "https://data.worldpop.org/repo/prj/Global_2015_2030/R2025A/doc/Global2_Release_Statement_R2025A_v1.pdf",
-  },
-  {
-    title: "Cooling Center Placement Research",
-    meta: "论文依据 · 冷却中心空间布设与最优选址研究",
-    value: "查看开放论文",
-    href: "https://pmc.ncbi.nlm.nih.gov/articles/PMC11564085/",
   },
   {
     title: "PySAL spopt",
@@ -480,6 +486,7 @@ function humanizeLocationAccuracy(value) {
 
 function humanizeStrategy(value) {
   const map = {
+    mclp_capacity_readiness_fairness_hybrid: "覆盖优先 + 容量/开放时段/适配度/公平性增强",
     mclp_coverage_time_hybrid: "覆盖优先 + 时间优化补位",
     mclp: "最大覆盖选址",
     mclp_distance_proxy: "距离代理选址",
@@ -1382,14 +1389,16 @@ function renderSiteCards(containerId, items) {
     name.textContent = normalizePoiName(item.name, normalizePoiCategory(item), index);
 
     const meta = document.createElement("small");
-    meta.textContent = `${normalizePoiCategory(item)} · ${formatCoord(item.lat, item.lon)}`;
+    meta.textContent =
+      `${normalizePoiCategory(item)} · ${item.district || "未标注城区"} · ${formatCoord(item.lat, item.lon)}`;
 
     copy.append(name, meta);
     nameCell.append(rank, copy);
 
     const tag = document.createElement("span");
     tag.className = "action-tag";
-    tag.textContent = item.covered_elderly_population > 0 ? "覆盖优先" : "均时优化";
+    tag.textContent =
+      item.selection_reason || (item.covered_elderly_population > 0 ? "覆盖优先" : "均时优化");
 
     head.append(nameCell, tag);
 
@@ -1406,8 +1415,12 @@ function renderSiteCards(containerId, items) {
         value: `${formatNumber(item.improved_cells)} 格`,
       },
       {
-        label: "加权时间收益",
-        value: formatNumber(Math.round(item.weighted_time_saving || 0)),
+        label: "运行适配",
+        value: formatDecimal(item.operational_suitability, 2),
+      },
+      {
+        label: "容量代理",
+        value: `${formatNumber(item.capacity_units || 0)} 单位`,
       },
     ].forEach((metric) => {
       const stat = document.createElement("div");
@@ -2048,6 +2061,15 @@ function renderRecommendations() {
     name.textContent = item.displayName || item.name;
     nameCell.append(rank, name);
     nameTd.appendChild(nameCell);
+    if (item.selection_reason || item.district) {
+      const sub = document.createElement("small");
+      sub.className = "table-sub";
+      const parts = [];
+      if (item.district) parts.push(item.district);
+      if (item.selection_reason) parts.push(item.selection_reason);
+      sub.textContent = parts.join(" · ");
+      nameTd.appendChild(sub);
+    }
 
     const typeTd = document.createElement("td");
     const pill = document.createElement("span");
@@ -2104,7 +2126,7 @@ function renderSiteSpotlight() {
       <p class="spotlight-summary">${summary}</p>
       <div class="spotlight-badges">
         <span class="spotlight-badge">${site.displayCategory || normalizePoiCategory(site)}</span>
-        <span class="spotlight-badge">${site.covered_elderly_population > 0 ? "覆盖优先" : "均时优化"}</span>
+        <span class="spotlight-badge">${site.selection_reason || (site.covered_elderly_population > 0 ? "覆盖优先" : "均时优化")}</span>
         <span class="spotlight-badge">${scenario ? `新增 ${scenario.new_site_count} 点方案` : "推荐点位"}</span>
       </div>
     </div>
@@ -2115,18 +2137,24 @@ function renderSiteSpotlight() {
         <small>${formatNumber(site.covered_cells || 0)} 个网格直接补盲</small>
       </div>
       <div class="spotlight-metric">
-        <span>改善网格</span>
-        <strong>${formatNumber(site.improved_cells || 0)} 个</strong>
-        <small>重点城区 ${derived.topDistrict.district || "--"} 优先落位</small>
+        <span>避暑模式</span>
+        <strong>${site.refuge_mode_label || "混合避暑"}</strong>
+        <small>${site.district || derived.topDistrict.district || "--"} · 片区优先度 ${formatDecimal(
+          site.district_priority_score,
+          2
+        )}</small>
       </div>
       <div class="spotlight-metric">
-        <span>时间收益</span>
-        <strong>${formatNumber(Math.round(site.weighted_time_saving || 0))}</strong>
-        <small>用于候选点综合排序的时间改进得分</small>
+        <span>运行适配</span>
+        <strong>${formatDecimal(site.operational_suitability, 2)}</strong>
+        <small>开放代理 ${formatPercent(site.service_window_score, 0)} · 开放性代理 ${formatPercent(
+          site.access_openness_score,
+          0
+        )}</small>
       </div>
       <div class="spotlight-metric">
-        <span>落点类型</span>
-        <strong>${site.displayCategory || normalizePoiCategory(site)}</strong>
+        <span>容量代理</span>
+        <strong>${formatNumber(site.capacity_units || 0)} 单位</strong>
         <small>${formatCoord(site.lat, site.lon)}</small>
       </div>
     </div>
@@ -2671,6 +2699,7 @@ function renderRecommendationNote() {
     `当前展示新增 ${scenario.new_site_count} 点方案：共选择 ${scenario.selected_site_count} 个候选点，` +
     `新增覆盖 ${formatNumber(totalCovered)} 名高风险老年人口，改善 ${formatNumber(improvedCells)} 个网格，` +
     `平均到达时间较${derived.activeCoolingLabel}基线缩短 ${formatSignedMinutes(timeSaved).replace("+", "")}。` +
+    `排序时已同时考虑容量代理、开放时段、室内/绿地避暑适配度与高风险片区优先度。` +
     `${derived.dashboard.recommendations?.candidate_scope?.excluded_existing_official_sites
       ? `系统已排除 ${formatNumber(derived.dashboard.recommendations.candidate_scope.excluded_existing_official_sites)} 个与官方在运纳凉点重叠的候选场地。`
       : ""}`;
@@ -3258,6 +3287,7 @@ function renderScenarioFocus() {
     note.textContent =
       `当前选中新增 ${scenario.new_site_count} 点方案：` +
       `${scenario.selected_site_count} 个候选点中，前两类收益分别来自直接补盲和继续压缩平均到达时间。` +
+      `在覆盖收益之外，模型还会对容量代理、开放时段与避暑适配度进行再排序。` +
       `若只增加到 ${derived.defaultScenarioCount || "--"} 点，系统会优先锁定覆盖收益最高的点位。` +
       `${derived.dashboard.recommendations?.candidate_scope?.excluded_existing_official_sites
         ? `模型已自动剔除 ${formatNumber(derived.dashboard.recommendations.candidate_scope.excluded_existing_official_sites)} 个与官方在运点重叠的候选场地。`
