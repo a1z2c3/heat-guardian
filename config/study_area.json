@@ -1,0 +1,107 @@
+{
+  "project_name": "热龄卫士",
+  "version": "0.1.0",
+  "study_area": {
+    "city": "武汉",
+    "display_name": "武汉主城区",
+    "timezone": "Asia/Shanghai",
+    "center": {
+      "lat": 30.5928,
+      "lon": 114.3055
+    },
+    "bbox": {
+      "north": 30.7400,
+      "south": 30.4600,
+      "west": 114.1000,
+      "east": 114.5100
+    },
+    "grid": {
+      "rows": 10,
+      "cols": 14
+    },
+    "district_hotspots": [
+      {
+        "name": "江岸区",
+        "lat": 30.6460,
+        "lon": 114.3090
+      },
+      {
+        "name": "江汉区",
+        "lat": 30.6010,
+        "lon": 114.2700
+      },
+      {
+        "name": "硚口区",
+        "lat": 30.5820,
+        "lon": 114.2140
+      },
+      {
+        "name": "汉阳区",
+        "lat": 30.5490,
+        "lon": 114.2180
+      },
+      {
+        "name": "武昌区",
+        "lat": 30.5530,
+        "lon": 114.3160
+      },
+      {
+        "name": "洪山区",
+        "lat": 30.5070,
+        "lon": 114.3430
+      },
+      {
+        "name": "青山区",
+        "lat": 30.6390,
+        "lon": 114.3970
+      }
+    ]
+  },
+  "poi_categories": [
+    {
+      "name": "community_centre",
+      "tag_key": "amenity",
+      "tag_value": "community_centre",
+      "label": "社区中心"
+    },
+    {
+      "name": "library",
+      "tag_key": "amenity",
+      "tag_value": "library",
+      "label": "图书馆"
+    },
+    {
+      "name": "hospital",
+      "tag_key": "amenity",
+      "tag_value": "hospital",
+      "label": "医院"
+    },
+    {
+      "name": "pharmacy",
+      "tag_key": "amenity",
+      "tag_value": "pharmacy",
+      "label": "药店"
+    },
+    {
+      "name": "social_facility",
+      "tag_key": "amenity",
+      "tag_value": "social_facility",
+      "label": "养老服务设施"
+    },
+    {
+      "name": "park",
+      "tag_key": "leisure",
+      "tag_value": "park",
+      "label": "公园"
+    }
+  ],
+  "service_thresholds_km": {
+    "nearby_resource": 1.2,
+    "recommendation_coverage": 1.5
+  },
+  "walk_analysis": {
+    "walking_speed_m_per_min": 75,
+    "service_thresholds_min": [5, 10, 15],
+    "recommendation_cutoff_min": 15
+  }
+}

@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="热龄卫士：面向高温健康风险的老年人避险资源分析与临时纳凉点优化决策平台。"
+    />
+    <meta name="theme-color" content="#071018" />
+    <title>热龄卫士</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/vendor/echarts.min.js"></script>
+  </head>
+  <body class="is-loading" data-visual-mode="command">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div class="progress-rail" aria-hidden="true">
+      <span id="page-progress-bar" class="progress-bar"></span>
+    </div>
+    <div class="section-hud" aria-hidden="true">
+      <span class="section-hud-label">Current Chapter</span>
+      <strong id="section-hud-title">01 / OVERVIEW</strong>
+      <small id="section-hud-detail">真实数据链路已接通</small>
+    </div>
+    <div class="page">
+      <noscript>
+        <div class="status-banner" data-tone="warning">
+          <div class="status-copy">
+            <strong>当前浏览器已禁用 JavaScript</strong>
+            <p>本页面依赖 JavaScript 渲染图表、指标联动和方案切换。</p>
+          </div>
+        </div>
+      </noscript>
+
+      <header class="hero">
+        <div class="hero-atmosphere" aria-hidden="true">
+          <span class="hero-orbit hero-orbit-a"></span>
+          <span class="hero-orbit hero-orbit-b"></span>
+          <span class="hero-beam"></span>
+          <span class="hero-signal hero-signal-a"></span>
+          <span class="hero-signal hero-signal-b"></span>
+          <span class="hero-noise"></span>
+        </div>
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <div class="eyebrow-row">
+              <p class="eyebrow">城市热健康决策中枢</p>
+              <span class="status-chip" id="data-status">真实数据联动</span>
+            </div>
+            <h1>热龄卫士</h1>
+            <div class="visual-mode-bar" aria-label="视觉方案切换">
+              <div class="visual-mode-switch">
+                <button type="button" class="visual-mode-button is-active" data-visual-mode-button data-visual-mode="command" aria-pressed="true">指挥屏</button>
+                <button type="button" class="visual-mode-button" data-visual-mode-button data-visual-mode="signal" aria-pressed="false">信号流</button>
+                <button type="button" class="visual-mode-button" data-visual-mode-button data-visual-mode="atlas" aria-pressed="false">Atlas</button>
+              </div>
+              <a class="template-overview-link" href="/gallery">模板总览</a>
+            </div>
+             <p class="subtitle">
+               把老年热风险识别、真实步行可达性、避险资源盘点与临时纳凉点优化放到同一张决策界面，
+               服务街道、社区与卫健部门在高温来临前完成提前部署。
+             </p>
+
+             <div class="context-grid" aria-label="数据口径与分析场景">
+               <article class="context-card">
+                 <span class="context-label">Risk Scenario</span>
+                 <strong id="risk-context-title" class="context-title">--</strong>
+                 <p id="risk-context-detail" class="context-detail">--</p>
+               </article>
+               <article class="context-card">
+                 <span class="context-label">Forecast Watch</span>
+                 <strong id="forecast-context-title" class="context-title">--</strong>
+                 <p id="forecast-context-detail" class="context-detail">--</p>
+               </article>
+               <article class="context-card">
+                 <span class="context-label">Resource Scope</span>
+                 <strong id="resource-context-title" class="context-title">--</strong>
+                 <p id="resource-context-detail" class="context-detail">--</p>
+               </article>
+             </div>
+
+             <div class="hero-stage">
+              <div class="hero-stage-head">
+                <div>
+                  <p class="panel-kicker">District Pressure</p>
+                  <div class="hero-stage-title">重点城区风险光谱</div>
+                </div>
+                <span class="panel-chip">Top 5 Districts</span>
+              </div>
+              <div id="hero-spectrum" class="hero-spectrum" aria-label="重点城区风险光谱"></div>
+            </div>
+
+            <div class="summary-pills">
+              <div class="summary-pill">
+                <span>研究区</span>
+                <strong id="study-area-name">武汉主城区</strong>
+              </div>
+              <div class="summary-pill">
+                <span>最高风险城区</span>
+                <strong id="top-district-name">--</strong>
+              </div>
+              <div class="summary-pill">
+                <span>完整模型增益</span>
+                <strong id="model-pop-gain">--</strong>
+              </div>
+              <div class="summary-pill">
+                <span>路网替代误差</span>
+                <strong id="network-mae">--</strong>
+              </div>
+            </div>
+
+            <div class="hero-callout">
+              <span class="callout-kicker">决策摘要</span>
+              <p id="hero-insight">--</p>
+            </div>
+
+            <div id="hero-evidence-strip" class="hero-evidence-strip" aria-label="关键数据源快照"></div>
+          </div>
+
+          <aside class="hero-aside">
+            <div class="aside-header">
+              <span class="aside-label">当前策略</span>
+              <strong id="hero-strategy">--</strong>
+              <p>围绕高风险老年人口覆盖与平均到达时间双目标进行调度。</p>
+            </div>
+
+            <div class="aside-grid">
+              <div class="aside-kpi">
+                <span>最高风险城区</span>
+                <strong id="top-district-card">--</strong>
+                <small id="top-district-risk">--</small>
+              </div>
+              <div class="aside-kpi">
+                <span>默认方案均时</span>
+                <strong id="scenario-5-time">--</strong>
+                <small>相较基线持续压缩</small>
+              </div>
+              <div class="aside-kpi">
+                <span>实验验证</span>
+                <strong id="experiment-count">4组</strong>
+                <small>风险 / 路网 / 选址 / 消融</small>
+              </div>
+              <div class="aside-kpi">
+                <span>15分钟新增覆盖</span>
+                <strong id="reachable-high-risk">--</strong>
+                <small>高风险网格可新增覆盖数</small>
+              </div>
+            </div>
+
+            <ul class="signal-list">
+              <li>
+                <span>人口</span>
+                <strong id="population-source">--</strong>
+              </li>
+              <li>
+                <span>路网</span>
+                <strong id="network-source">--</strong>
+              </li>
+              <li>
+                <span>实验误差</span>
+                <strong id="network-mae-hero">--</strong>
+              </li>
+              <li>
+                <span>官方纳凉点</span>
+                <strong id="official-site-count-hero">--</strong>
+              </li>
+              <li>
+                <span>实时预警</span>
+                <strong id="forecast-warning-hero">--</strong>
+              </li>
+            </ul>
+          </aside>
+        </div>
+      </header>
+
+      <main id="main-content" aria-busy="true">
+        <section
+          id="app-status"
+          class="status-banner"
+          data-tone="loading"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="status-copy">
+            <strong id="app-status-title">正在联动真实数据与实验结果…</strong>
+            <p id="app-status-detail">优先加载仪表盘指标，其次渲染风险栅格和方案图表。</p>
+          </div>
+          <button id="retry-button" class="ghost-button is-hidden" type="button">重新加载</button>
+        </section>
+
+        <section class="signal-ticker-shell" aria-label="城区快讯">
+          <div class="signal-ticker-label">Live Feed</div>
+          <div id="signal-ticker" class="signal-ticker"></div>
+        </section>
+
+        <div class="command-nav-shell">
+          <nav id="command-nav" class="command-nav" aria-label="页面分区导航">
+            <a class="command-link is-active" href="#section-overview" data-section-target="section-overview">总览</a>
+            <a class="command-link" href="#section-ops" data-section-target="section-ops">调度</a>
+            <a class="command-link" href="#section-spatial" data-section-target="section-spatial">空间</a>
+            <a class="command-link" href="#section-analysis" data-section-target="section-analysis">分析</a>
+            <a class="command-link" href="#section-warning" data-section-target="section-warning">预警</a>
+            <a class="command-link" href="#section-evidence" data-section-target="section-evidence">证据</a>
+            <a class="command-link" href="#section-sites" data-section-target="section-sites">点位</a>
+          </nav>
+        </div>
+
+        <section class="workflow-shell observe-section" id="section-overview" data-nav-section data-chapter="01 / OVERVIEW">
+          <div class="workflow-head">
+            <div>
+              <p class="panel-kicker">Decision Chain</p>
+              <div class="panel-title">一屏看懂当前调度链路</div>
+            </div>
+            <span class="panel-chip">识别 → 诊断 → 仿真 → 落地</span>
+          </div>
+          <div id="workflow-strip" class="workflow-strip" aria-label="决策链路摘要"></div>
+        </section>
+
+        <section class="metrics-shell observe-section" aria-label="核心指标摘要">
+          <div class="metrics-shell-head">
+            <div>
+              <p class="panel-kicker">Command Snapshot</p>
+              <div class="panel-title">当前热风险、覆盖缺口与策略收益</div>
+            </div>
+            <p class="metrics-shell-note">
+              把温度、风险、现有保障能力与方案增益压缩到同一视图，适合答辩时先讲现状，再讲缺口，最后讲新增点位带来的改善。
+            </p>
+          </div>
+          <div id="ops-ribbon" class="ops-ribbon" aria-label="调度摘要"></div>
+          <div class="cards">
+          <div class="card card-primary" data-tone="cool">
+             <span class="label">当前温度</span>
+             <strong id="current-temp">--</strong>
+             <span class="meta">Open-Meteo 实时预报</span>
+           </div>
+           <div class="card" data-tone="warm">
+             <span class="label">24小时最高温</span>
+             <strong id="max-temp-24">--</strong>
+             <span class="meta">当前监测窗口峰值</span>
+           </div>
+           <div class="card" data-tone="danger">
+             <span class="label">高风险网格</span>
+             <strong id="high-risk-cells">--</strong>
+             <span class="meta">风险分数 ≥ 60</span>
+           </div>
+           <div class="card" data-tone="teal">
+             <span class="label">15分钟覆盖率</span>
+             <strong id="coverage-15">--</strong>
+             <span class="meta">全部支撑资源步行覆盖</span>
+           </div>
+           <div class="card" data-tone="neutral">
+              <span class="label">全部支撑资源</span>
+              <strong id="resource-count">--</strong>
+              <span class="meta">城市服务盘点总量</span>
+             </div>
+           <div class="card" data-tone="teal">
+             <span class="label">官方在运纳凉点</span>
+             <strong id="official-site-count">--</strong>
+             <span class="meta">研究区内已校准官方点位</span>
+           </div>
+           <div class="card" data-tone="accent">
+             <span class="label">默认方案覆盖率</span>
+             <strong id="scenario-5-coverage">--</strong>
+            <span class="meta">默认推荐情景</span>
+          </div>
+          <div class="card card-accent" data-tone="accent">
+            <span class="label">默认方案新增覆盖</span>
+            <strong id="scenario-5-improvement">--</strong>
+            <span class="meta">高风险老年人口</span>
+          </div>
+          <div class="card" data-tone="warm">
+            <span class="label">路网替代误差</span>
+            <strong id="network-mae-card">--</strong>
+            <span class="meta">真实路网 vs 距离代理</span>
+          </div>
+          <div class="card" data-tone="teal">
+            <span class="label">完整模型增益</span>
+            <strong id="model-gain-card">--</strong>
+            <span class="meta">额外识别高龄暴露人口</span>
+          </div>
+          </div>
+        </section>
+
+        <section class="grid ops-grid observe-section" id="section-ops" data-nav-section data-chapter="02 / OPS">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Role Briefing</p>
+                <div class="panel-title">角色化行动看板</div>
+              </div>
+              <span id="role-chip" class="panel-chip">街道视角</span>
+            </div>
+            <div id="role-switcher" class="toolbar" aria-label="角色切换"></div>
+            <div class="briefing-card">
+              <div class="briefing-top">
+                <div>
+                  <h2 id="role-title">--</h2>
+                  <p id="role-summary" class="panel-note">--</p>
+                </div>
+                <span id="role-priority" class="briefing-badge">--</span>
+              </div>
+              <div id="role-metrics" class="briefing-metrics"></div>
+              <div id="role-actions" class="action-list"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Scenario Control</p>
+                <div class="panel-title">方案切换与候选点明细</div>
+              </div>
+              <span id="scenario-chip" class="panel-chip">默认方案</span>
+            </div>
+            <div id="scenario-switcher" class="toolbar" aria-label="方案切换"></div>
+            <div class="scenario-focus">
+              <div id="scenario-focus-metrics" class="focus-kpis"></div>
+              <p id="scenario-focus-note" class="panel-note">--</p>
+              <div id="scenario-site-list" class="site-grid"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel spatial-panel observe-section" id="section-spatial" data-nav-section data-chapter="03 / SPATIAL">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Spatial Board</p>
+              <div class="panel-title">真实空间态势图</div>
+            </div>
+            <span id="spatial-chip" class="panel-chip">风险网格 + 候选点</span>
+          </div>
+          <div class="spatial-head">
+            <div class="spatial-legend" aria-label="风险等级图例">
+              <span class="legend-item">
+                <i class="legend-dot" data-tone="low"></i>
+                低风险
+              </span>
+              <span class="legend-item">
+                <i class="legend-dot" data-tone="mid"></i>
+                中风险
+              </span>
+              <span class="legend-item">
+                <i class="legend-dot" data-tone="high"></i>
+                高风险
+              </span>
+              <span class="legend-item">
+                <i class="legend-dot" data-tone="site"></i>
+                当前方案候选点
+              </span>
+              <span class="legend-item">
+                <i class="legend-dot" data-tone="official"></i>
+                官方在运纳凉点
+              </span>
+            </div>
+            <p class="panel-note spatial-note">
+              用研究区真实经纬度投影展示风险网格、城区热点与当前方案候选点；点击右侧对象或图中元素可查看细节。
+            </p>
+          </div>
+          <div class="spatial-layout">
+            <div class="spatial-stage">
+              <div
+                id="spatial-map"
+                class="spatial-map"
+                role="img"
+                aria-label="研究区风险网格与当前候选点空间分布"
+              ></div>
+            </div>
+            <aside class="spatial-side">
+              <div class="focus-card">
+                <div class="focus-head">
+                  <div>
+                    <p class="panel-kicker">Spatial Focus</p>
+                    <h2 id="map-focus-title">--</h2>
+                  </div>
+                  <span id="map-focus-badge" class="briefing-badge">--</span>
+                </div>
+                <p id="map-focus-summary" class="panel-note">--</p>
+                <div id="map-focus-metrics" class="focus-kpis"></div>
+              </div>
+
+              <div class="spatial-lists">
+                <div class="mini-panel">
+                  <div class="mini-title">最高风险网格</div>
+                  <div id="priority-cell-list" class="mini-list"></div>
+                </div>
+                <div class="mini-panel">
+                  <div class="mini-title">当前候选点位</div>
+                  <div id="priority-site-list" class="mini-list"></div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="grid two-cols observe-section" id="section-analysis" data-nav-section data-chapter="04 / ANALYSIS">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p id="trend-panel-kicker" class="panel-kicker">Forecast</p>
+                <div id="trend-panel-title" class="panel-title">72小时温度趋势</div>
+              </div>
+              <span id="trend-panel-chip" class="panel-chip">Open-Meteo</span>
+            </div>
+            <div id="trend-chart" class="chart"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Grid Risk</p>
+                <div class="panel-title">街区风险热力矩阵</div>
+              </div>
+              <span class="panel-chip">10 × 14 网格</span>
+            </div>
+            <div id="heatmap-chart" class="chart"></div>
+          </div>
+        </section>
+
+        <section class="grid two-cols observe-section">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">District Scan</p>
+                <div class="panel-title">高风险城区排行</div>
+              </div>
+              <span class="panel-chip">街区对比</span>
+            </div>
+            <div id="district-chart" class="chart"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Resource Pool</p>
+                <div class="panel-title">避险资源概况</div>
+              </div>
+              <span class="panel-chip">POI 资源盘点</span>
+            </div>
+            <div id="poi-list" class="metric-list"></div>
+          </div>
+        </section>
+
+        <section class="grid two-cols observe-section">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Scenario Test</p>
+                <div class="panel-title">新增点位情景对比</div>
+              </div>
+              <span class="panel-chip">实验三</span>
+            </div>
+            <div id="scenario-chart" class="chart"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Validation</p>
+                <div class="panel-title">模型与实验说明</div>
+              </div>
+              <span class="panel-chip">实验一 / 二 / 四</span>
+            </div>
+            <div id="model-insights" class="metric-list"></div>
+          </div>
+        </section>
+
+        <section class="grid two-cols observe-section" id="section-warning" data-nav-section data-chapter="05 / ALERT">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Warning Board</p>
+                <div class="panel-title">实时预警与推演等级</div>
+              </div>
+              <span id="warning-chip" class="panel-chip">双场景</span>
+            </div>
+            <div id="warning-metrics" class="focus-kpis"></div>
+            <div id="warning-actions" class="action-list"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Official Cooling</p>
+                <div class="panel-title">官方通报与在运点位</div>
+              </div>
+              <span id="official-chip" class="panel-chip">官方页面监测</span>
+            </div>
+            <p id="official-cooling-note" class="panel-note"></p>
+            <div id="official-bulletin-list" class="metric-list"></div>
+            <div id="official-site-grid" class="site-grid official-site-grid"></div>
+          </div>
+        </section>
+
+        <section class="grid two-cols observe-section" id="section-evidence" data-nav-section data-chapter="06 / EVIDENCE">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Evidence Chain</p>
+                <div class="panel-title">自动刷新与来源追踪</div>
+              </div>
+              <span id="evidence-chip" class="panel-chip">上游状态</span>
+            </div>
+            <p id="evidence-note" class="panel-note"></p>
+            <div id="evidence-kpis" class="focus-kpis"></div>
+            <div id="source-freshness-grid" class="source-grid"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Method Basis</p>
+                <div class="panel-title">方法证明与外部参考</div>
+              </div>
+              <span id="reference-chip" class="panel-chip">政策 / 数据 / 方法</span>
+            </div>
+            <p id="reference-note" class="panel-note"></p>
+            <div id="method-proof-list" class="action-list"></div>
+            <div id="reference-link-list" class="metric-list reference-link-list"></div>
+          </div>
+        </section>
+
+        <section class="panel observe-section" id="section-sites" data-nav-section data-chapter="07 / SITES">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Recommended Sites</p>
+              <div class="panel-title">新增临时纳凉点推荐</div>
+            </div>
+            <span id="recommendation-scenario-chip" class="panel-chip">默认方案</span>
+          </div>
+          <div id="site-spotlight" class="site-spotlight" aria-live="polite"></div>
+          <p id="recommendation-note" class="panel-note"></p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>类型</th>
+                  <th>新增覆盖人口</th>
+                  <th>新增覆盖网格</th>
+                  <th>改善网格</th>
+                  <th>加权时间改善</th>
+                </tr>
+              </thead>
+              <tbody id="recommendation-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div class="footer-note">
+          数据链路：WorldPop 最新发布 / OpenStreetMap / Geofabrik / Open-Meteo / 武汉官方公开页面
+        </div>
+        <div class="footer-note">
+          最近更新：<span id="footer-updated">--</span>
+        </div>
+      </footer>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
