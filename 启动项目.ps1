@@ -1,49 +1,48 @@
 param(
-  [switch]$RefreshData
+  [switch]$IncludeReportAssets
 )
 
 $ErrorActionPreference = "Stop"
 
-$pythonExe = ".\.venv\Scripts\python"
-$uvicornExe = ".\.venv\Scripts\uvicorn"
-$requiredOutputs = @(
-  "data\processed\weather_summary.json",
-  "data\processed\poi_points.json",
-  "data\processed\population_grid.json",
-  "data\processed\accessibility_summary.json",
-  "data\processed\risk_summary.json",
-  "data\processed\site_recommendations.json",
-  "data\processed\data_authenticity_audit.json"
-)
+$pythonExe = ".\.venv\Scripts\python.exe"
+$uvicornExe = ".\.venv\Scripts\uvicorn.exe"
+$requirementsStamp = ".\.venv\.requirements.sha256"
 
-function Test-PipelineOutputsReady {
-  foreach ($path in $requiredOutputs) {
-    if (!(Test-Path $path)) {
-      return $false
-    }
-  }
-  return $true
+function Get-RequirementsHash {
+  return (Get-FileHash -Path ".\requirements.txt" -Algorithm SHA256).Hash
 }
 
 if (!(Test-Path ".venv")) {
   python -m venv .venv
 }
 
-& $pythonExe -m pip install -r requirements.txt
+if (!(Test-Path $pythonExe) -or !(Test-Path $uvicornExe)) {
+  throw "虚拟环境不完整，请删除 .venv 后重新运行 .\\启动项目.ps1"
+}
 
-$outputsReady = Test-PipelineOutputsReady
-if ($RefreshData -or -not $outputsReady) {
-  if ($RefreshData) {
-    Write-Host "RefreshData enabled. Running full data pipeline..."
-  }
-  else {
-    Write-Host "Processed outputs missing. Running full data pipeline..."
-  }
-  & $pythonExe -u scripts\run_pipeline.py
+$requirementsHash = Get-RequirementsHash
+$savedRequirementsHash = if (Test-Path $requirementsStamp) {
+  (Get-Content -Path $requirementsStamp -Raw -Encoding UTF8).Trim()
 }
 else {
-  Write-Host "Processed outputs found. Skipping pipeline and starting the app directly."
-  Write-Host "To refresh data, run .\\更新数据.ps1 or .\\启动项目.ps1 -RefreshData"
+  ""
+}
+
+if ($savedRequirementsHash -ne $requirementsHash) {
+  Write-Host "Installing Python dependencies..."
+  & $pythonExe -m pip install --disable-pip-version-check -r requirements.txt
+  Set-Content -Path $requirementsStamp -Value $requirementsHash -Encoding ASCII
+}
+else {
+  Write-Host "Python dependencies unchanged. Skipping pip install."
+}
+
+Write-Host "Refreshing real upstream data before app startup..."
+if ($IncludeReportAssets) {
+  & $pythonExe -u scripts\run_pipeline.py --include-report-assets
+}
+else {
+  & $pythonExe -u scripts\run_pipeline.py
 }
 
 & $uvicornExe backend.app.main:app --reload

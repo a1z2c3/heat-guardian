@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 import urllib3
@@ -46,7 +47,7 @@ def request_with_retry(
                 method,
                 url,
                 headers={"User-Agent": USER_AGENT},
-                timeout=(30, 300),
+                timeout=(15, 60),
                 allow_redirects=True,
                 stream=stream,
                 verify=verify,
@@ -231,12 +232,48 @@ def worldpop_candidates() -> list[dict]:
     return candidates
 
 
-def detect_latest_worldpop_bundle() -> dict:
+def manifest_worldpop_candidate(manifest: dict | None) -> dict | None:
+    if not manifest:
+        return None
+    data_year = manifest.get("data_year")
+    release = manifest.get("release")
+    if not data_year or not release:
+        return None
+    return {
+        "data_year": data_year,
+        "release": release,
+        "age65_url": build_worldpop_url("65", int(data_year), str(release)),
+        "age80_url": build_worldpop_url("80", int(data_year), str(release)),
+    }
+
+
+def iterate_worldpop_candidates(manifest: dict | None) -> list[dict]:
+    candidates = []
+    preferred = manifest_worldpop_candidate(manifest)
+    if preferred is not None:
+        candidates.append(preferred)
+    seen = {(item["data_year"], item["release"]) for item in candidates}
     for candidate in worldpop_candidates():
-        age65_info = probe_remote_file(candidate["age65_url"])
+        key = (candidate["data_year"], candidate["release"])
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return candidates
+
+
+def probe_worldpop_pair(candidate: dict) -> tuple[dict | None, dict | None]:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        age65_future = executor.submit(probe_remote_file, candidate["age65_url"])
+        age80_future = executor.submit(probe_remote_file, candidate["age80_url"])
+        return age65_future.result(), age80_future.result()
+
+
+def detect_latest_worldpop_bundle(manifest: dict | None = None) -> dict:
+    for candidate in iterate_worldpop_candidates(manifest):
+        age65_info, age80_info = probe_worldpop_pair(candidate)
         if age65_info is None:
             continue
-        age80_info = probe_remote_file(candidate["age80_url"])
         if age80_info is None:
             continue
         return {
@@ -258,7 +295,7 @@ def cleanup_worldpop_dir() -> None:
 
 def update_worldpop(manifest: dict) -> None:
     worldpop_manifest = manifest.get("worldpop", {})
-    latest_bundle = detect_latest_worldpop_bundle()
+    latest_bundle = detect_latest_worldpop_bundle(worldpop_manifest)
 
     for key, age_code in (("age65", "65"), ("age80", "80")):
         canonical_path = WORLDPOP_CANONICAL_FILES[key]

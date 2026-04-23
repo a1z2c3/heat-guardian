@@ -1,7 +1,8 @@
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
-from common import PROCESSED_DIR, RAW_DIR, current_timestamp, ensure_directories, fetch_json, load_config, write_json
+from common import PROCESSED_DIR, RAW_DIR, current_timestamp, ensure_directories, fetch_json, load_config, read_json, write_json
 
 
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -119,6 +120,26 @@ def build_forecast_summary(payload: dict) -> dict:
 
 def latest_completed_warm_season_year(now: datetime) -> int:
     return now.year if now.month >= 10 else now.year - 1
+
+
+def load_cached_archive(season_year: int) -> dict | None:
+    path = RAW_DIR / f"weather_archive_{season_year}_warm_season.json"
+    payload = read_json(path, None)
+    hourly = payload.get("hourly", {}) if isinstance(payload, dict) else {}
+    if hourly.get("time") and hourly.get("apparent_temperature"):
+        return payload
+    return None
+
+
+def fetch_or_load_archive(config: dict, season_year: int) -> tuple[dict, bool]:
+    cached = load_cached_archive(season_year)
+    if cached is not None:
+        return cached, False
+    payload = fetch_json(
+        OPEN_METEO_ARCHIVE_URL,
+        params=build_archive_params(config, season_year),
+    )
+    return payload, True
 
 
 def build_archive_params(config: dict, season_year: int) -> dict:
@@ -315,15 +336,22 @@ def main() -> None:
         "timezone": config["study_area"].get("timezone", "Asia/Shanghai"),
     }
 
-    forecast_payload = fetch_json(
-        OPEN_METEO_FORECAST_URL,
-        params={**shared_hourly_params, "forecast_days": 4},
-    )
-    forecast_summary = build_forecast_summary(forecast_payload)
-
     season_year = latest_completed_warm_season_year(now)
-    archive_params = build_archive_params(config, season_year)
-    archive_payload = fetch_json(OPEN_METEO_ARCHIVE_URL, params=archive_params)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        forecast_future = executor.submit(
+            fetch_json,
+            OPEN_METEO_FORECAST_URL,
+            params={**shared_hourly_params, "forecast_days": 4},
+        )
+        archive_future = executor.submit(
+            fetch_or_load_archive,
+            config,
+            season_year,
+        )
+        forecast_payload = forecast_future.result()
+        archive_payload, archive_was_fetched = archive_future.result()
+
+    forecast_summary = build_forecast_summary(forecast_payload)
     historical_case = find_hottest_window(archive_payload, season_year)
 
     analysis_profile, risk_context_label = choose_analysis_profile(forecast_summary, historical_case)
@@ -361,11 +389,15 @@ def main() -> None:
     }
 
     write_json(RAW_DIR / "weather_forecast.json", forecast_payload)
-    write_json(RAW_DIR / f"weather_archive_{season_year}_warm_season.json", archive_payload)
+    if archive_was_fetched:
+        write_json(RAW_DIR / f"weather_archive_{season_year}_warm_season.json", archive_payload)
     write_json(RAW_DIR / "weather_analysis_profile.json", analysis_profile)
     write_json(PROCESSED_DIR / "weather_summary.json", summary)
 
-    print("天气预报与历史热浪场景已更新。")
+    if archive_was_fetched:
+        print("天气预报与历史热浪场景已更新。")
+    else:
+        print("天气预报已实时刷新，历史热浪场景复用最新本地归档。")
 
 
 if __name__ == "__main__":

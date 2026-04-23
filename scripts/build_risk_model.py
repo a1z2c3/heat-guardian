@@ -7,13 +7,16 @@ from shapely.geometry import Polygon
 from common import (
     DATA_DIR,
     PROCESSED_DIR,
+    RAW_DIR,
     build_base_grid,
     current_timestamp,
     ensure_directories,
+    file_stat_signature,
     haversine_km,
     load_config,
     normalize,
     read_json,
+    semantic_hash,
     write_json,
 )
 
@@ -25,6 +28,7 @@ BUILDINGS_PATH = DATA_DIR / "external" / "geofabrik" / "hubei" / "gis_osm_buildi
 ROADS_PATH = DATA_DIR / "external" / "geofabrik" / "hubei" / "gis_osm_roads_free_1.shp"
 LANDUSE_PATH = DATA_DIR / "external" / "geofabrik" / "hubei" / "gis_osm_landuse_a_free_1.shp"
 COOLING_LANDUSE_CLASSES = {"park", "forest", "grass", "meadow", "recreation_ground", "scrub"}
+ENVIRONMENTAL_METRICS_CACHE_PATH = RAW_DIR / "environmental_metrics_cache.json"
 
 
 def clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
@@ -208,6 +212,59 @@ def build_environmental_metrics(config: dict, base_grid: list[dict], park_pois: 
     return metrics
 
 
+def build_environmental_metrics_signature(config: dict, base_grid: list[dict], park_pois: list[dict]) -> str:
+    park_records = sorted(
+        [
+            {
+                "id": poi.get("id"),
+                "lat": round(float(poi["lat"]), 6),
+                "lon": round(float(poi["lon"]), 6),
+                "name": poi.get("name"),
+            }
+            for poi in park_pois
+            if poi.get("lat") is not None and poi.get("lon") is not None
+        ],
+        key=lambda item: (
+            str(item.get("id") or ""),
+            float(item["lat"]),
+            float(item["lon"]),
+            str(item.get("name") or ""),
+        ),
+    )
+    payload = {
+        "study_area": config.get("study_area", {}),
+        "grid_cell_count": len(base_grid),
+        "park_records": park_records,
+        "source_files": {
+            "buildings": file_stat_signature(BUILDINGS_PATH),
+            "roads": file_stat_signature(ROADS_PATH),
+            "landuse": file_stat_signature(LANDUSE_PATH),
+        },
+    }
+    return semantic_hash(payload, ignored_keys=set())
+
+
+def load_or_build_environmental_metrics(config: dict, base_grid: list[dict], park_pois: list[dict]) -> dict[str, dict]:
+    signature = build_environmental_metrics_signature(config, base_grid, park_pois)
+    cached_payload = read_json(ENVIRONMENTAL_METRICS_CACHE_PATH, {})
+    cached_metrics = cached_payload.get("metrics", {})
+    if cached_payload.get("signature") == signature and cached_metrics:
+        print("复用静态环境代理缓存。")
+        return cached_metrics
+
+    metrics = build_environmental_metrics(config, base_grid, park_pois)
+    write_json(
+        ENVIRONMENTAL_METRICS_CACHE_PATH,
+        {
+            "generated_at": current_timestamp(),
+            "signature": signature,
+            "metrics": metrics,
+        },
+    )
+    print("静态环境代理缓存已重建。")
+    return metrics
+
+
 def get_scope_summary(accessibility_summary: dict, key: str) -> dict:
     scopes = accessibility_summary.get("resource_scopes", {})
     if key in scopes:
@@ -308,7 +365,7 @@ def main() -> None:
     active_pois = [poi for poi in (pois + official_sites) if poi.get("category") in active_categories]
     park_pois = [poi for poi in pois if poi.get("category") == "park"]
 
-    environmental_metrics = build_environmental_metrics(config, base_grid, park_pois)
+    environmental_metrics = load_or_build_environmental_metrics(config, base_grid, park_pois)
     population_map = {item["id"]: item for item in population.get("features", [])}
     support_access_map = {item["id"]: item for item in all_scope_features}
     active_access_map = {item["id"]: item for item in active_scope_features}

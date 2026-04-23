@@ -1,5 +1,6 @@
 from html import unescape
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import urllib3
@@ -559,16 +560,17 @@ def main() -> None:
 
     raw_sources = []
     source_map: dict[str, dict] = {}
-    for source in MONITORED_SOURCES:
+
+    def fetch_source_record(source: dict) -> tuple[dict, dict | None]:
         try:
             html = request_text(source["url"])
             text = html_to_text(html)
             record = build_source_record(source, html, text)
-            source_map[source["key"]] = {
+            source_record = {
                 **record,
                 "_clean_text": text,
             }
-            raw_sources.append(
+            raw_record = (
                 {
                     "key": source["key"],
                     "title": source["title"],
@@ -578,23 +580,25 @@ def main() -> None:
                     "text_preview": text[:1500],
                 }
             )
+            return raw_record, source_record
         except Exception as error:
             cached_source = next(
                 (item for item in cached_payload.get("bulletins", []) if item.get("key") == source["key"]),
                 None,
             )
+            source_record = None
             if cached_source is not None:
                 fallback_clean_text = build_fallback_clean_text(
                     source["key"],
                     cached_payload,
                     cached_raw_payload,
                 )
-                source_map[source["key"]] = {
+                source_record = {
                     **cached_source,
                     "_clean_text": fallback_clean_text,
                     "status": "cached_snapshot",
                 }
-            raw_sources.append(
+            raw_record = (
                 {
                     "key": source["key"],
                     "title": source["title"],
@@ -604,6 +608,23 @@ def main() -> None:
                     "error": str(error),
                 }
             )
+            return raw_record, source_record
+
+    with ThreadPoolExecutor(max_workers=min(6, len(MONITORED_SOURCES))) as executor:
+        future_map = {
+            executor.submit(fetch_source_record, source): source
+            for source in MONITORED_SOURCES
+        }
+        results_by_key: dict[str, tuple[dict, dict | None]] = {}
+        for future in as_completed(future_map):
+            source = future_map[future]
+            results_by_key[source["key"]] = future.result()
+
+    for source in MONITORED_SOURCES:
+        raw_record, source_record = results_by_key[source["key"]]
+        raw_sources.append(raw_record)
+        if source_record is not None:
+            source_map[source["key"]] = source_record
 
     site_records = build_site_records(config, source_map)
     live_bulletins = []

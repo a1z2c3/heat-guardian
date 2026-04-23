@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 from datetime import datetime
@@ -15,6 +16,14 @@ DATA_DIR = ROOT_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+VOLATILE_JSON_KEYS = {
+    "generated_at",
+    "checked_at",
+    "updated_at",
+    "downloaded_at",
+    "fetched_at",
+    "refreshed_at",
+}
 
 
 def ensure_directories() -> None:
@@ -38,6 +47,39 @@ def read_json(path: Path, default: Any = None) -> Any:
     if not path.exists():
         return default
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def canonicalize_for_hash(payload: Any, ignored_keys: set[str] | None = None) -> Any:
+    ignored = VOLATILE_JSON_KEYS if ignored_keys is None else ignored_keys
+    if isinstance(payload, dict):
+        return {
+            key: canonicalize_for_hash(value, ignored)
+            for key, value in sorted(payload.items())
+            if key not in ignored
+        }
+    if isinstance(payload, list):
+        return [canonicalize_for_hash(item, ignored) for item in payload]
+    return payload
+
+
+def semantic_hash(payload: Any, ignored_keys: set[str] | None = None) -> str:
+    normalized = canonicalize_for_hash(payload, ignored_keys)
+    serialized = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def semantic_hash_file(path: Path, ignored_keys: set[str] | None = None, default: str = "missing") -> str:
+    if not path.exists():
+        return default
+    return semantic_hash(read_json(path, None), ignored_keys)
+
+
+def file_stat_signature(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    stat = path.stat()
+    signature = f"{path.name}|{stat.st_size}|{stat.st_mtime_ns}"
+    return hashlib.sha256(signature.encode("utf-8")).hexdigest()
 
 
 def current_timestamp() -> str:
