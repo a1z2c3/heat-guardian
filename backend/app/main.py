@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -25,6 +25,17 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI(title="热龄卫士", version="0.4.0")
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+
+@app.middleware("http")
+async def disable_browser_cache(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path == "/gallery" or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 @app.get("/api/health")

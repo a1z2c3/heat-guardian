@@ -6,7 +6,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from common import ROOT_DIR, PROCESSED_DIR, read_json
+from common import ROOT_DIR, PROCESSED_DIR, current_timestamp, read_json
 
 
 OUTPUTS_DIR = ROOT_DIR / "outputs"
@@ -14,6 +14,10 @@ TABLE_DIR = OUTPUTS_DIR / "report_tables"
 CHART_DIR = OUTPUTS_DIR / "report_charts"
 DOCS_DIR = ROOT_DIR / "docs"
 EXTERNAL_DIR = ROOT_DIR / "data" / "external"
+COMPETITION_DOC_DIR = DOCS_DIR / "参赛文档"
+SUBMISSION_META_PATH = ROOT_DIR / "config" / "submission_metadata.json"
+DEFAULT_WORK_ID = "待填作品编号"
+DEFAULT_WORK_NAME = "热龄卫士：基于多源时空数据的城市适老化热健康风险预警与避险服务调度平台"
 
 
 def setup_matplotlib() -> None:
@@ -27,8 +31,35 @@ def setup_matplotlib() -> None:
 
 
 def ensure_dirs() -> None:
-    for path in (OUTPUTS_DIR, TABLE_DIR, CHART_DIR, DOCS_DIR):
+    for path in (OUTPUTS_DIR, TABLE_DIR, CHART_DIR, DOCS_DIR, COMPETITION_DOC_DIR):
         path.mkdir(parents=True, exist_ok=True)
+
+
+def load_submission_metadata() -> dict:
+    metadata = read_json(SUBMISSION_META_PATH, {}) or {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def resolve_work_id(metadata: dict) -> str:
+    work_id = str(metadata.get("work_id", "")).strip()
+    return work_id or DEFAULT_WORK_ID
+
+
+def resolve_work_name(metadata: dict) -> str:
+    work_name = str(metadata.get("work_name", "")).strip()
+    return work_name or DEFAULT_WORK_NAME
+
+
+def resolve_people(items: list | None) -> str:
+    names = [str(item).strip() for item in (items or []) if str(item).strip()]
+    return "、".join(names) if names else "待填"
+
+
+def normalize_ai_records(metadata: dict) -> list[dict]:
+    records = metadata.get("ai_tool_records", [])
+    if not isinstance(records, list):
+        return []
+    return [item for item in records if isinstance(item, dict)]
 
 
 def get_accessibility_scope(accessibility: dict, key: str) -> dict:
@@ -774,9 +805,313 @@ def build_report_draft(
     (DOCS_DIR / "研究报告初稿-热龄卫士.md").write_text(report, encoding="utf-8")
 
 
+def build_demo_script(
+    weather: dict,
+    risk_summary: dict,
+    accessibility: dict,
+    optimization: dict,
+    recommendations: dict,
+) -> None:
+    forecast = weather.get("forecast", {})
+    analysis_profile = weather.get("analysis_profile", {})
+    all_access = get_accessibility_scope(accessibility, "all_support_resources")
+    active_access = get_accessibility_scope(accessibility, "existing_active_cooling_resources")
+    scenario3 = next((item for item in optimization.get("scenarios", []) if item.get("new_site_count") == 3), None)
+    scenario5 = next((item for item in optimization.get("scenarios", []) if item.get("new_site_count") == 5), None)
+    scenario8 = next((item for item in optimization.get("scenarios", []) if item.get("new_site_count") == 8), None)
+    top_sites = recommendations.get("recommendations", [])[:3]
+    top_site_names = "、".join(
+        site.get("display_name", site.get("name", "--"))
+        for site in top_sites
+        if site.get("display_name") or site.get("name")
+    ) or "待补充重点候选点"
+    total_high_risk_cells = optimization.get("high_risk_cell_count", risk_summary.get("high_risk_cells", 0))
+    reachable_cells = optimization.get("coverage_reachable_high_risk_cell_count", 0)
+
+    script = f"""# 演示脚本
+
+## 1. 开场
+
+“本项目叫热龄卫士，面向武汉主城区高温风险治理场景，解决三个连续问题：哪些老年人最危险、现有避险资源够不够、有限新增点位应该放在哪里最有效。当前系统默认以`{weather_profile_label(weather)}`作为风险推演场景，避免在非高温日靠人为抬温凑演示效果。”
+
+## 2. 展示风险识别
+
+1. 打开首页。
+2. 说明当前实时温度 `{forecast.get('current_temperature', weather.get('current_temperature', 0))}`℃、未来 24 小时最高温 `{forecast.get('next_24h_max_temperature', weather.get('next_24h_max_temperature', 0))}`℃、当前高风险网格 `{risk_summary.get('high_risk_cells', 0)}` 个。
+3. 说明默认风险推演窗口为 `{format_window(analysis_profile.get('start_time'), analysis_profile.get('end_time'))}`。
+4. 展示风险热力矩阵与街区风险排行。
+5. 强调高风险并不是只看气温，而是综合了老年人口暴露、局地空间代理与资源可达性。
+
+## 3. 展示可达性诊断
+
+1. 展示 `{all_access.get('scope_label', '全部支撑资源')}` 与 `{active_access.get('scope_label', '既有主动避暑资源')}` 的口径差异。
+2. 说明 `{all_access.get('scope_label', '全部支撑资源')}` 15 分钟覆盖率为 `{round(all_access.get('coverage_15min_rate', 0) * 100, 2)}%`，而优化基线 `{active_access.get('scope_label', '既有主动避暑资源')}` 仅为 `{round(active_access.get('coverage_15min_rate', 0) * 100, 2)}%`。
+3. 强调当前使用真实步行网络，而不是简单直线距离。
+
+## 4. 展示选址优化
+
+1. 切到“新增点位情景对比”。
+2. 说明系统先最大化 15 分钟新增覆盖，再用剩余点位继续缩短平均到达时间。
+3. 对比基线、3 点、5 点、8 点方案。
+4. 说明当前共有 `{total_high_risk_cells}` 个高风险网格，其中 `{reachable_cells}` 个能在 15 分钟阈值内通过候选点实现新增覆盖。
+5. 点出结果：`3` 点方案覆盖率提升到 `{round((scenario3 or {}).get('metrics', {}).get('coverage_rate_population', 0) * 100, 2)}%`，`5` 点方案提升到 `{round((scenario5 or {}).get('metrics', {}).get('coverage_rate_population', 0) * 100, 2)}%`，`8` 点方案进一步提升到 `{round((scenario8 or {}).get('metrics', {}).get('coverage_rate_population', 0) * 100, 2)}%`。
+
+## 5. 展示推荐点位
+
+1. 展示默认 5 点方案推荐表。
+2. 说明每个推荐点位包含新增覆盖人口、新增覆盖网格、改善网格、加权时间改善。
+3. 点出重点推荐点位，如 `{top_site_names}`。
+
+## 6. 展示导出材料
+
+1. 打开 `outputs/report_tables/选址优化情景对比.csv`。
+2. 打开 `outputs/report_charts/02_平均到达时间对比.png`。
+3. 打开 `docs/研究报告初稿-热龄卫士.md`。
+4. 打开 `docs/参赛文档/04-1-作品提交要求响应清单-热龄卫士.md`，强调材料不是临时拼的。
+
+## 7. 结束语
+
+“热龄卫士不是一个普通的大屏，而是把热风险识别、步行可达性评估、设施选址优化和决策展示打通，直接服务街道与社区在高温来临时的资源调度。”
+"""
+
+    (DOCS_DIR / "演示脚本.md").write_text(script, encoding="utf-8")
+
+
+def build_ai_usage_draft(metadata: dict) -> None:
+    work_id = resolve_work_id(metadata)
+    work_name = resolve_work_name(metadata)
+    authors = resolve_people(metadata.get("authors"))
+    advisors = resolve_people(metadata.get("advisors"))
+    records = normalize_ai_records(metadata)
+    confirmed = metadata.get("ai_usage_confirmed")
+    if confirmed is True:
+        status_label = "已确认存在 AI 辅助内容，请继续补齐明细与佐证。"
+    elif confirmed is False:
+        status_label = "当前标记为“待核对/未确认”，赛前必须与实际使用情况核实。"
+    else:
+        status_label = "尚未确认，请在最终提交前核对是否存在 AI 辅助内容。"
+
+    if records:
+        rows = []
+        for index, record in enumerate(records, start=1):
+            rows.append(
+                "| "
+                + " | ".join(
+                    [
+                        str(index),
+                        str(record.get("tool_name") or "待补充"),
+                        str(record.get("stage_purpose") or "待补充"),
+                        str(record.get("prompt_summary") or "待补充"),
+                        str(record.get("response_summary") or "待补充"),
+                        str(record.get("manual_revision") or "待补充"),
+                        str(record.get("adoption_note") or "待补充"),
+                    ]
+                )
+                + " |"
+            )
+        record_rows = "\n".join(rows)
+    else:
+        record_rows = "\n".join(
+            [
+                "| 1 | 待按实际填写 | 待按实际填写 | 待按实际填写 | 待按实际填写 | 待按实际填写 | 待按实际填写 |",
+                "| 2 | 待按实际填写 | 待按实际填写 | 待按实际填写 | 待按实际填写 | 待按实际填写 | 待按实际填写 |",
+                "| 3 | 待按实际填写 | 待按实际填写 | 待按实际填写 | 待按实际填写 | 待按实际填写 | 待按实际填写 |",
+            ]
+        )
+
+    note = str(metadata.get("ai_usage_note") or "").strip()
+    if not note:
+        note = "如作品存在任何 AI 辅助内容，请按实际情况补齐工具名称、访问方式、使用时间、关键提示词、人工修改说明和佐证材料。"
+
+    draft = f"""# 04-3 AI工具使用说明
+
+## 一、基础信息
+
+- 作品编号：`{work_id if work_id != DEFAULT_WORK_ID else '[待填]'}` 
+- 作品名称：{work_name}
+- 作者：{authors}
+- 指导教师：{advisors}
+- 当前状态：{status_label}
+
+## 二、重要合规提醒
+
+1. 若作品存在任何 AI 生成或 AI 辅助内容，这份说明不建议省略。
+2. 正式提交时，AI 工具名称、版本、访问方式、使用时间和报名表中的填写口径必须一致。
+3. 赛前请再次核对：实际使用的 AI 工具是否属于赛规允许名单，或能否明确归类为自研工具。
+4. 关键提示词、回复摘要、人工修改说明和采纳比例必须能被截图、录屏、对话日志或代码标注支撑。
+
+## 三、当前仓库建议说明
+
+{note}
+
+## 四、使用记录草稿
+
+| 序号 | AI工具名称、版本、访问方式、使用时间 | 使用环节与目的 | 关键提示词 | AI回复关键内容 | 人工修改说明 | 采纳比例与说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+{record_rows}
+
+## 五、佐证材料建议
+
+- 附录1：关键截图（需保留时间戳和工具界面）。
+- 附录2：关键交互录屏或对话日志（如 JSON / TXT / Markdown / MP4）。
+- 附录3：代码、文稿或图表中标注 AI 辅助部分的说明。
+
+## 六、赛前必须补齐的内容
+
+- 在 `config/submission_metadata.json` 中补齐作品编号、作者、指导教师和 AI 使用记录。
+- 将最终 PDF 与佐证材料一起放入 `03设计与开发文档` 目录。
+- 若实际未使用 AI 工具，请在报名表与本说明中保持同一口径，不要一边写“未使用”，一边仓库里全是 AI 痕迹。
+"""
+
+    (COMPETITION_DOC_DIR / "04-3-AI工具使用说明-热龄卫士.md").write_text(draft, encoding="utf-8")
+
+
+def build_submission_checklist(metadata: dict) -> None:
+    work_id = resolve_work_id(metadata)
+    work_id_label = work_id if work_id != DEFAULT_WORK_ID else "待填作品编号"
+    current_date = current_timestamp().split("T")[0]
+    ai_records = normalize_ai_records(metadata)
+    ai_status = "已形成草稿，待导出 PDF 与补齐佐证" if ai_records else "待按实际填写并补齐佐证"
+
+    checklist = f"""# 04-1 作品提交要求响应清单
+
+## 一、作品基本信息
+
+- 作品名称：{resolve_work_name(metadata)}
+- 参赛大类：大数据应用
+- 参赛小类：实践赛
+- 当前版本日期：{current_date}
+- 当前工程目录：`{ROOT_DIR}`
+- 说明：本清单按 `04-1作品提交要求（必填模板）（大数据应用，2026版）V2` 的栏目逐项响应，用于赛前核查材料是否齐全、口径是否一致、目录是否可直接提交。
+
+## 二、按 04-1 官方要求逐项响应
+
+| 类别 | 官方要求摘要 | 本项目对应材料 | 当前状态 | 说明 |
+| --- | --- | --- | --- | --- |
+| 说明文档 | 提交《作品信息概要表》的 PDF 版本 | `04-2-作品信息概要表-热龄卫士.md` | 内容已完成，待导出 PDF | 作品编号、作者姓名、指导教师、签名日期需按最终报名信息补填后导出。 |
+| 设计文档 | 提交《作品报告》PDF 版本 | `04-4-作品报告-热龄卫士.md` | 内容已完成，待导出 PDF | 已按 `04-4` 模板章节结构重写，建议转入 Word 模板后补图号、表号、目录和页眉页脚。 |
+| AI 工具说明 | 若作品涉及 AI 内容，需补充 04-3 PDF 与佐证材料 | `04-3-AI工具使用说明-热龄卫士.md`、截图/录屏/对话日志 | {ai_status} | 这不是装饰材料，而是合规材料；工具名称必须与允许名单或自研工具口径一致。 |
+| 演示文档 | 提交现场演示 PPT | `演示脚本.md` | 待补最终 PPT | 当前脚本已根据最新结果刷新，可直接据此制作 10-15 页答辩 PPT。 |
+| 演示视频 | 5 分钟左右 MP4，建议 1080P，≤500MB | `{work_id_label}-04作品演示视频/待放置-演示视频.txt` | 待录制 | 建议录制“问题背景-系统流程-地图演示-实验结果-落地意义”五段式视频。 |
+| 源代码 | 提交全部自研源码、工程文件、必要模型与样例数据 | `{work_id_label}-02素材与源码/热龄卫士-源码与样例.zip` | 已完成 | 压缩包已生成；开源依赖通过 `requirements.txt` 说明，不重复打包第三方源码。 |
+| 数据集 | 可只上传典型样本，并在信息表中说明完整版获取方式 | `data/processed/`、`outputs/report_tables/`、`outputs/report_charts/` | 已完成核心样例 | 推荐提交处理后样例、图表和说明，不必打包全部原始大文件。 |
+| 模型/算法材料 | 需提交模型、实验结果和必要说明 | `04-4-作品报告-热龄卫士.md`、`数据真实性审计表.csv`、`风险模型验证.csv`、`模块消融实验.csv` | 已完成 | 当前项目不是训练型深度模型，而是“真实数据输入 + 风险/可达性/选址模型计算”体系，实验材料已齐。 |
+| 作品系统 | 参赛作品应有完整软件或软硬件实物系统 | 本地 Web 系统：`http://127.0.0.1:8000/` | 已完成 | 可本地一键启动，具备前后端、数据更新、实验结果和交互展示。 |
+| readme.txt | 每个提交文件夹需包含 `readme.txt` | 已在 01/02/03/04 四个目录生成 | 已完成 | 当前提交包骨架已满足目录说明要求。 |
+
+## 三、当前提交包目录映射
+
+### 1. `{work_id_label}-01作品与答辩材料`
+
+- `网站进入与使用说明.md`
+- `部署说明.md`
+- `项目说明书.md`
+- `运行入口与部署说明.txt`
+- `readme.txt`
+
+建议补充：
+
+- `答辩PPT.pdf`
+- `答辩演示版.mp4` 或嵌入 PPT 的演示视频
+- 若采用公网展示，可附运行网址和二维码
+
+### 2. `{work_id_label}-02素材与源码`
+
+- `热龄卫士-源码与样例.zip`
+- `源码压缩包说明.txt`
+- `readme.txt`
+
+建议补充：
+
+- 典型样例数据说明
+- 若需要，可附 `data/processed/` 的精选样例文件
+
+### 3. `{work_id_label}-03设计与开发文档`
+
+已具备：
+
+- 官方模板目录
+- 图表与表格目录
+- 报告与说明目录
+
+建议本次正式放入：
+
+- `04-1-作品提交要求响应清单-热龄卫士.pdf`
+- `04-2-作品信息概要表-热龄卫士.pdf`
+- `04-3-AI工具使用说明-热龄卫士.pdf`（如作品涉及 AI 辅助）
+- `04-4-作品报告-热龄卫士.pdf`
+- `项目实际价值与应用场景总结-热龄卫士.pdf`
+- AI 工具佐证材料（截图、录屏、日志、代码标注）
+
+### 4. `{work_id_label}-04作品演示视频`
+
+当前仅有占位说明文件，需补齐：
+
+- 最终演示视频 MP4
+- 若另有“答辩专用视频”，建议单独命名
+
+## 四、本项目相对 04-1 的优势材料
+
+### 1. 文档完整度较高
+
+- 已有研究报告、项目说明书、部署说明、网站使用说明、演示脚本、图表与表格导出物。
+- 本轮补齐了 `04-3` 草稿和 AI 合规提醒，避免后期临时补材料时口径失控。
+
+### 2. 实物系统可运行
+
+- 项目不是静态 PPT 或单次分析脚本，而是可启动、可浏览、可切换方案、可查看证据链的完整 Web 系统。
+- 后端接口、数据文件、图表导出和提交包骨架已打通。
+
+### 3. 数据与实验材料真实且可追溯
+
+- 上游数据来自 Open-Meteo、WorldPop、OpenStreetMap/Overpass、Geofabrik、武汉官方公开页面。
+- 项目新增“数据真实性审计”，明确哪些是上游真实数据、哪些是模型推导输出、哪些包含代理变量。
+- 可直接支撑评审最关心的“真实性”和“有效性”问题。
+
+## 五、赛前必须补齐的最后事项
+
+- 补填作品编号、作者姓名、指导教师姓名、签字日期。
+- 将 `04-2`、`04-3`（如涉及 AI）和 `04-4` 转入官方 Word 模板，导出最终 PDF。
+- 基于 `演示脚本.md` 制作答辩 PPT。
+- 录制 5 分钟左右 MP4 演示视频。
+- 核对实际使用的 AI 工具是否只涉及赛规允许工具或自研工具，并准备对应佐证材料。
+
+## 六、建议提交前最后核查
+
+- 文档中的“真实数据”表述是否全部改为“真实公开数据输入 + 模型推导输出”。
+- 所有图表、表格、截图中的数字是否与当前 `data/processed/` 一致。
+- 作品报告、概要表、PPT、视频中的项目名称、研究区域、实验指标是否完全一致。
+- 是否保留了“当前默认风险场景为 2025-08-03 至 2025-08-06 真实历史热浪窗口”这一关键说明。
+- 是否明确写出官方纳凉点坐标来自“官方地址/场馆名 + OSM 空间锚定”，而非政府直接发布经纬度。
+- 是否补齐 AI 工具使用说明及其佐证材料，并与报名表口径保持一致。
+
+## 七、结论
+
+从 `04-1` 的要求看，本项目已经具备较完整的参赛基础：
+
+- 系统可运行
+- 核心文档已成型
+- 源码包已生成
+- 图表表格已导出
+- 提交包目录骨架已建立
+
+当前真正缺的不是技术主体，而是最后一层提交包装：
+
+- 最终 PDF 化
+- PPT 与视频制作
+- 报名信息和签名补齐
+- AI 合规说明与佐证同步
+
+只要完成上述事项，本项目即可按较高完成度进入正式提交阶段。
+"""
+
+    (COMPETITION_DOC_DIR / "04-1-作品提交要求响应清单-热龄卫士.md").write_text(checklist, encoding="utf-8")
+
+
 def main() -> None:
     ensure_dirs()
     setup_matplotlib()
+    submission_metadata = load_submission_metadata()
 
     weather = read_json(PROCESSED_DIR / "weather_summary.json", {})
     risk_summary = read_json(PROCESSED_DIR / "risk_summary.json", {})
@@ -816,6 +1151,9 @@ def main() -> None:
         source_refresh_manifest,
         authenticity_audit,
     )
+    build_demo_script(weather, risk_summary, accessibility, optimization, recommendations)
+    build_ai_usage_draft(submission_metadata)
+    build_submission_checklist(submission_metadata)
 
     print("实验图表、摘要表和报告初稿已生成。")
 

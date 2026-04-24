@@ -13,6 +13,7 @@ from common import (
     DATA_DIR,
     build_base_grid,
     current_timestamp,
+    describe_grid_resolution,
     ensure_directories,
     haversine_km,
     load_config,
@@ -72,6 +73,7 @@ def detect_population_columns(columns: list[str]) -> tuple[str | None, str | Non
 def build_fallback_population(config: dict[str, Any]) -> dict[str, Any]:
     hotspots = config["study_area"]["district_hotspots"]
     cells = build_base_grid(config)
+    grid_resolution = describe_grid_resolution(config)
     scores = [compute_hotspot_score(cell["center_lat"], cell["center_lon"], hotspots) for cell in cells]
     minimum = min(scores) if scores else 0.0
     maximum = max(scores) if scores else 1.0
@@ -99,12 +101,14 @@ def build_fallback_population(config: dict[str, Any]) -> dict[str, Any]:
         "generated_at": current_timestamp(),
         "source": "hotspot_fallback",
         "data_level": "demo_estimate",
+        "grid_resolution": grid_resolution,
         "features": features,
     }
 
 
 def aggregate_points(records: list[dict[str, Any]], config: dict[str, Any], source: str, level: str) -> dict[str, Any]:
     cells = build_base_grid(config)
+    grid_resolution = describe_grid_resolution(config)
     aggregates: dict[str, dict[str, Any]] = {
         cell["id"]: {
             "id": cell["id"],
@@ -146,6 +150,7 @@ def aggregate_points(records: list[dict[str, Any]], config: dict[str, Any], sour
         "generated_at": current_timestamp(),
         "source": source,
         "data_level": level,
+        "grid_resolution": grid_resolution,
         "features": features,
     }
 
@@ -243,6 +248,7 @@ def load_population_from_rasters(
     source_label: str | None = None,
 ) -> dict[str, Any]:
     cells = build_base_grid(config)
+    grid_resolution = describe_grid_resolution(config)
     age65_totals = aggregate_raster(path65, config)
     age80_totals = aggregate_raster(path80, config) if path80 else {}
 
@@ -269,6 +275,7 @@ def load_population_from_rasters(
         "generated_at": current_timestamp(),
         "source": source,
         "data_level": "worldpop_raster",
+        "grid_resolution": grid_resolution,
         "features": features,
     }
 

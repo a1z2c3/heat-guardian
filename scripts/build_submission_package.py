@@ -3,15 +3,12 @@ import shutil
 import zipfile
 from pathlib import Path
 
-from common import ROOT_DIR, current_timestamp
+from common import ROOT_DIR, current_timestamp, read_json
 
 
 OUTPUT_DIR = ROOT_DIR / "outputs" / "submission_package"
-PACKAGE_ROOT = OUTPUT_DIR / "待填作品编号-参赛总文件夹"
-ARTIFACTS_DIR = PACKAGE_ROOT / "待填作品编号-01作品与答辩材料"
-SOURCE_DIR = PACKAGE_ROOT / "待填作品编号-02素材与源码"
-DOC_DIR = PACKAGE_ROOT / "待填作品编号-03设计与开发文档"
-VIDEO_DIR = PACKAGE_ROOT / "待填作品编号-04作品演示视频"
+SUBMISSION_META_PATH = ROOT_DIR / "config" / "submission_metadata.json"
+DEFAULT_WORK_ID = "待填作品编号"
 
 
 ROOT_FILES = [
@@ -42,6 +39,7 @@ DATA_SAMPLES = [
 DOC_FILES = [
     "docs/参赛文档/04-1-作品提交要求响应清单-热龄卫士.md",
     "docs/参赛文档/04-2-作品信息概要表-热龄卫士.md",
+    "docs/参赛文档/04-3-AI工具使用说明-热龄卫士.md",
     "docs/参赛文档/04-4-作品报告-热龄卫士.md",
     "docs/参赛文档/项目实际价值与应用场景总结-热龄卫士.md",
     "docs/项目说明书.md",
@@ -54,18 +52,43 @@ REPORT_ASSET_DIRS = [
     "outputs/report_charts",
 ]
 TEMPLATE_FILES = [
+    "要求文档/04-1作品提交要求（必填模板）（大数据应用，2026版）V2.docx",
     "要求文档/04-2 作品信息概要表（大数据应用，2026版）模板.docx",
+    "要求文档/04-3-AI工具使用说明（选用模板）（大数据应用，2026年版）.docx",
     "要求文档/04-4 作品报告（大数据应用赛，2026版）模板.docx",
 ]
 MANUAL_REQUIRED = [
     "04-2作品信息概要表.pdf",
     "04-4作品报告.pdf",
+    "04-3AI工具使用说明.pdf（如作品存在AI辅助内容）",
     "演示PPT.pdf",
     "演示视频.mp4（建议 5 分钟左右，1080P，<=500MB）",
+    "AI工具佐证材料（截图/录屏/对话日志/代码标注，如作品存在AI辅助内容）",
     "报名表（全体作者/指导教师签字并加盖学校或教务处公章）",
     "版权声明（全体作者/指导教师签字）",
     "作品编号、作者姓名、指导教师姓名、签名日期补齐",
 ]
+
+
+def load_submission_metadata() -> dict:
+    metadata = read_json(SUBMISSION_META_PATH, {}) or {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def resolve_work_id(metadata: dict) -> str:
+    work_id = str(metadata.get("work_id", "")).strip()
+    return work_id or DEFAULT_WORK_ID
+
+
+def build_layout(work_id: str) -> dict[str, Path]:
+    package_root = OUTPUT_DIR / f"{work_id}-参赛总文件夹"
+    return {
+        "package_root": package_root,
+        "artifacts_dir": package_root / f"{work_id}-01作品与答辩材料",
+        "source_dir": package_root / f"{work_id}-02素材与源码",
+        "doc_dir": package_root / f"{work_id}-03设计与开发文档",
+        "video_dir": package_root / f"{work_id}-04作品演示视频",
+    }
 
 
 def reset_dir(path: Path) -> None:
@@ -112,8 +135,8 @@ def write_folder_readme(path: Path, title: str, description: str, bullet_points:
     write_text(path / "readme.txt", "\n".join(body))
 
 
-def build_source_zip() -> Path:
-    zip_path = SOURCE_DIR / "热龄卫士-源码与样例.zip"
+def build_source_zip(layout: dict[str, Path]) -> Path:
+    zip_path = layout["source_dir"] / "热龄卫士-源码与样例.zip"
     included: list[str] = []
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for relative in ROOT_FILES:
@@ -138,7 +161,7 @@ def build_source_zip() -> Path:
                 included.append(relative)
 
     write_text(
-        SOURCE_DIR / "源码压缩包说明.txt",
+        layout["source_dir"] / "源码压缩包说明.txt",
         "\n".join(
             [
                 "本压缩包包含：",
@@ -158,12 +181,12 @@ def build_source_zip() -> Path:
     return zip_path
 
 
-def copy_docs_and_assets() -> dict:
+def copy_docs_and_assets(layout: dict[str, Path]) -> dict:
     copied = {"docs": [], "assets": [], "templates": [], "missing": []}
 
-    report_bucket = DOC_DIR / "报告与说明"
-    assets_bucket = DOC_DIR / "图表与表格"
-    template_bucket = DOC_DIR / "官方模板"
+    report_bucket = layout["doc_dir"] / "报告与说明"
+    assets_bucket = layout["doc_dir"] / "图表与表格"
+    template_bucket = layout["doc_dir"] / "官方模板"
 
     for relative in DOC_FILES:
         src = ROOT_DIR / relative
@@ -192,9 +215,9 @@ def copy_docs_and_assets() -> dict:
     return copied
 
 
-def create_artifact_placeholders() -> None:
+def create_artifact_placeholders(layout: dict[str, Path]) -> None:
     write_text(
-        ARTIFACTS_DIR / "运行入口与部署说明.txt",
+        layout["artifacts_dir"] / "运行入口与部署说明.txt",
         "\n".join(
             [
                 "项目运行入口：",
@@ -210,21 +233,30 @@ def create_artifact_placeholders() -> None:
             ]
         ),
     )
-    safe_copy(ROOT_DIR / "docs/部署说明.md", ARTIFACTS_DIR / "部署说明.md")
-    safe_copy(ROOT_DIR / "docs/网站进入与使用说明.md", ARTIFACTS_DIR / "网站进入与使用说明.md")
-    safe_copy(ROOT_DIR / "docs/项目说明书.md", ARTIFACTS_DIR / "项目说明书.md")
+    safe_copy(ROOT_DIR / "docs/部署说明.md", layout["artifacts_dir"] / "部署说明.md")
+    safe_copy(ROOT_DIR / "docs/网站进入与使用说明.md", layout["artifacts_dir"] / "网站进入与使用说明.md")
+    safe_copy(ROOT_DIR / "docs/项目说明书.md", layout["artifacts_dir"] / "项目说明书.md")
     write_text(
-        VIDEO_DIR / "待放置-演示视频.txt",
+        layout["video_dir"] / "待放置-演示视频.txt",
         "请将最终成片导出为 MP4 并放入本目录。建议 5 分钟左右、1080P、文件大小不超过 500MB。",
+    )
+    write_text(
+        layout["doc_dir"] / "AI工具佐证材料说明.txt",
+        "\n".join(
+            [
+                "若作品存在 AI 辅助内容，请将相关截图、录屏、对话日志、代码标注或说明文档放在本目录中。",
+                "建议与 04-3 AI工具使用说明中的序号保持一致，避免答辩时无法对证。",
+            ]
+        ),
     )
 
 
-def write_root_manifest(copy_summary: dict, source_zip_path: Path) -> None:
+def write_root_manifest(layout: dict[str, Path], copy_summary: dict, source_zip_path: Path) -> None:
     manifest = {
         "generated_at": current_timestamp(),
-        "package_root": str(PACKAGE_ROOT.relative_to(ROOT_DIR)),
+        "package_root": str(layout["package_root"].relative_to(ROOT_DIR)),
         "included": {
-            "artifact_dir": str(ARTIFACTS_DIR.relative_to(ROOT_DIR)),
+            "artifact_dir": str(layout["artifacts_dir"].relative_to(ROOT_DIR)),
             "source_zip": str(source_zip_path.relative_to(ROOT_DIR)),
             "docs": copy_summary["docs"],
             "report_assets": copy_summary["assets"],
@@ -233,7 +265,7 @@ def write_root_manifest(copy_summary: dict, source_zip_path: Path) -> None:
         "manual_required": MANUAL_REQUIRED,
         "missing_local_files": copy_summary["missing"],
     }
-    write_text(PACKAGE_ROOT / "submission_manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+    write_text(layout["package_root"] / "submission_manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
 
     checklist_lines = [
         "# 提交前待人工补充清单",
@@ -249,16 +281,20 @@ def write_root_manifest(copy_summary: dict, source_zip_path: Path) -> None:
                 *[f"- [ ] {item}" for item in copy_summary["missing"]],
             ]
         )
-    write_text(PACKAGE_ROOT / "待人工补充清单.md", "\n".join(checklist_lines))
+    write_text(layout["package_root"] / "待人工补充清单.md", "\n".join(checklist_lines))
 
 
 def main() -> None:
-    reset_dir(PACKAGE_ROOT)
-    for folder in (ARTIFACTS_DIR, SOURCE_DIR, DOC_DIR, VIDEO_DIR):
+    metadata = load_submission_metadata()
+    work_id = resolve_work_id(metadata)
+    layout = build_layout(work_id)
+
+    reset_dir(layout["package_root"])
+    for folder in (layout["artifacts_dir"], layout["source_dir"], layout["doc_dir"], layout["video_dir"]):
         folder.mkdir(parents=True, exist_ok=True)
 
     write_folder_readme(
-        ARTIFACTS_DIR,
+        layout["artifacts_dir"],
         "01作品与答辩材料",
         "放置可执行程序、部署入口、网址、二维码、答辩PPT以及用于作品演示的辅助材料。",
         [
@@ -268,7 +304,7 @@ def main() -> None:
         ],
     )
     write_folder_readme(
-        SOURCE_DIR,
+        layout["source_dir"],
         "02素材与源码",
         "放置团队开发产生的全部核心源码、工程文件与少量典型数据样例。",
         [
@@ -277,17 +313,18 @@ def main() -> None:
         ],
     )
     write_folder_readme(
-        DOC_DIR,
+        layout["doc_dir"],
         "03设计与开发文档",
         "放置作品报告、作品信息概要表、提交核查清单、图表与表格等设计开发文档。",
         [
             "报告与说明/",
             "图表与表格/",
             "官方模板/",
+            "AI工具佐证材料说明.txt",
         ],
     )
     write_folder_readme(
-        VIDEO_DIR,
+        layout["video_dir"],
         "04作品演示视频",
         "放置最终 MP4 演示视频。如有单独答辩演示版视频，也可一并放入并明确标注。",
         [
@@ -295,12 +332,12 @@ def main() -> None:
         ],
     )
 
-    create_artifact_placeholders()
-    source_zip_path = build_source_zip()
-    copy_summary = copy_docs_and_assets()
-    write_root_manifest(copy_summary, source_zip_path)
+    create_artifact_placeholders(layout)
+    source_zip_path = build_source_zip(layout)
+    copy_summary = copy_docs_and_assets(layout)
+    write_root_manifest(layout, copy_summary, source_zip_path)
 
-    print(f"参赛提交目录已生成：{PACKAGE_ROOT}")
+    print(f"参赛提交目录已生成：{layout['package_root']}")
 
 
 if __name__ == "__main__":

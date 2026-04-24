@@ -182,6 +182,31 @@ def build_base_grid(config: dict[str, Any]) -> list[dict[str, Any]]:
     return cells
 
 
+def describe_grid_resolution(config: dict[str, Any]) -> dict[str, Any]:
+    bbox = config["study_area"]["bbox"]
+    grid = config["study_area"]["grid"]
+    rows = int(grid["rows"])
+    cols = int(grid["cols"])
+    center_lat = float(config["study_area"]["center"]["lat"])
+
+    lat_km = (bbox["north"] - bbox["south"]) * 111.32
+    lon_km = (bbox["east"] - bbox["west"]) * 111.32 * math.cos(math.radians(center_lat))
+    cell_height_km = lat_km / max(rows, 1)
+    cell_width_km = lon_km / max(cols, 1)
+
+    return {
+        "rows": rows,
+        "cols": cols,
+        "total_cells": rows * cols,
+        "study_area_height_km": round(lat_km, 2),
+        "study_area_width_km": round(lon_km, 2),
+        "cell_height_km": round(cell_height_km, 2),
+        "cell_width_km": round(cell_width_km, 2),
+        "approx_cell_area_sqkm": round(cell_height_km * cell_width_km, 2),
+        "analysis_unit_label": "公里级规则网格",
+    }
+
+
 def locate_grid_cell(lat: float, lon: float, config: dict[str, Any]) -> tuple[int, int] | None:
     bbox = config["study_area"]["bbox"]
     grid = config["study_area"]["grid"]

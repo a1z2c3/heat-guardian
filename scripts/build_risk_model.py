@@ -10,6 +10,7 @@ from common import (
     RAW_DIR,
     build_base_grid,
     current_timestamp,
+    describe_grid_resolution,
     ensure_directories,
     file_stat_signature,
     haversine_km,
@@ -332,6 +333,7 @@ def build_weather_profile(weather: dict) -> dict:
 def main() -> None:
     ensure_directories()
     config = load_config()
+    grid_resolution = describe_grid_resolution(config)
     hotspots = config["study_area"]["district_hotspots"]
     thresholds = config["service_thresholds_km"]
     base_grid = build_base_grid(config)
@@ -448,6 +450,7 @@ def main() -> None:
                 "road_density_km_per_sqkm": road_density,
                 "green_coverage_ratio": green_coverage_ratio,
                 "nearest_park_distance_km": nearest_park_distance,
+                "elderly_population_imputed": elderly_population <= 0,
             }
         )
         elderly_scores.append(elderly_score)
@@ -525,6 +528,7 @@ def main() -> None:
             "green_coverage_ratio": round(cell["green_coverage_ratio"], 4),
             "nearest_park_distance_km": cell["nearest_park_distance_km"],
             "estimated_elderly_population": estimated_elderly_population,
+            "elderly_population_imputed": cell["elderly_population_imputed"],
             "age80_plus": cell["age80_plus"],
             "support_access_score": round(support_access_score, 3),
             "active_cooling_access_score": round(active_access_score, 3),
@@ -576,6 +580,7 @@ def main() -> None:
     summary = {
         "generated_at": current_timestamp(),
         "data_level": "real_weather_spatial_proxy_model",
+        "grid_resolution": grid_resolution,
         "risk_context_label": weather_profile["context_label"],
         "analysis_profile_type": weather_profile["profile_type"],
         "analysis_case_label": weather_profile["case_label"],
@@ -593,6 +598,7 @@ def main() -> None:
         "high_risk_cells": sum(1 for item in grid_features if item["risk_score"] >= HIGH_RISK_THRESHOLD),
         "very_high_risk_cells": sum(1 for item in grid_features if item["risk_score"] >= VERY_HIGH_RISK_THRESHOLD),
         "medium_or_above_cells": sum(1 for item in grid_features if item["risk_score"] >= MEDIUM_RISK_THRESHOLD),
+        "imputed_population_cells": sum(1 for item in grid_features if item.get("elderly_population_imputed")),
         "average_risk": round(sum(item["risk_score"] for item in grid_features) / max(len(grid_features), 1), 2),
         "districts": districts[:7],
     }

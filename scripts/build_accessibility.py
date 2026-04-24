@@ -8,7 +8,18 @@ import numpy as np
 import osmnx as ox
 import urllib3
 
-from common import DATA_DIR, PROCESSED_DIR, build_base_grid, current_timestamp, ensure_directories, haversine_km, load_config, read_json, write_json
+from common import (
+    DATA_DIR,
+    PROCESSED_DIR,
+    build_base_grid,
+    current_timestamp,
+    describe_grid_resolution,
+    ensure_directories,
+    haversine_km,
+    load_config,
+    read_json,
+    write_json,
+)
 
 
 GRAPH_PATH = DATA_DIR / "raw" / "walk_network.pkl"
@@ -18,6 +29,11 @@ ALL_SUPPORT_CATEGORIES = {"community_centre", "library", "hospital", "pharmacy",
 ACTIVE_COOLING_CATEGORIES = {"community_centre", "social_facility"}
 OFFICIAL_COOLING_CATEGORY = "official_cooling_site"
 SERVICE_CATEGORIES = ALL_SUPPORT_CATEGORIES
+BASELINE_SUPPORT_SCOPE_LABEL = "既有社区避暑支撑资源"
+BASELINE_SUPPORT_SCOPE_STATEMENT = (
+    "该口径用于选址优化基线，包含官方在运纳凉点，以及社区中心、养老服务设施等当前已存在的社区避暑支撑资源。"
+    "它反映的是基层现有支撑网络与可快速转化底座，不等同于全部官方已开放纳凉点。"
+)
 OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api",
     "https://lz4.overpass-api.de/api",
@@ -369,6 +385,7 @@ def main() -> None:
     walk_config = config["walk_analysis"]
     walking_speed = walk_config["walking_speed_m_per_min"]
     grid_cells = build_base_grid(config)
+    grid_resolution = describe_grid_resolution(config)
     pois = read_json(PROCESSED_DIR / "poi_points.json", [])
     official_payload = read_json(PROCESSED_DIR / "official_cooling_sites.json", {"sites": []})
     official_sites = [
@@ -393,7 +410,7 @@ def main() -> None:
     )
     active_scope = build_scope_result(
         "existing_active_cooling_resources",
-        "既有主动避暑资源",
+        BASELINE_SUPPORT_SCOPE_LABEL,
         ACTIVE_COOLING_CATEGORIES | {OFFICIAL_COOLING_CATEGORY},
         category_label_lookup,
         graph,
@@ -414,10 +431,20 @@ def main() -> None:
         walk_config["recommendation_cutoff_min"],
     )
 
+    for scope in (all_scope, active_scope, official_scope):
+        scope["summary"]["grid_resolution"] = grid_resolution
+    active_scope["summary"]["scope_statement"] = BASELINE_SUPPORT_SCOPE_STATEMENT
+    official_scope["summary"]["scope_statement"] = (
+        "该口径仅纳入已完成官方原文与位置核验、且位于研究区内的官方在运纳凉点。"
+    )
+
     summary = {
         **all_scope["summary"],
+        "grid_resolution": grid_resolution,
         "default_scope": "all_support_resources",
         "optimization_baseline_scope": "existing_active_cooling_resources",
+        "optimization_baseline_scope_label": BASELINE_SUPPORT_SCOPE_LABEL,
+        "optimization_baseline_scope_statement": BASELINE_SUPPORT_SCOPE_STATEMENT,
         "official_cooling_scope": "official_operational_cooling_sites",
         "resource_scopes": {
             "all_support_resources": all_scope["summary"],

@@ -9,8 +9,8 @@
     />
     <meta name="theme-color" content="#071018" />
     <title>热龄卫士</title>
-    <link rel="stylesheet" href="/static/styles.css" />
-    <script src="/static/vendor/echarts.min.js"></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260424-ui-fix3" />
+    <script src="/static/vendor/echarts.min.js?v=20260424-ui-fix3"></script>
   </head>
   <body class="is-loading" data-visual-mode="command">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -61,21 +61,63 @@
                服务街道、社区与卫健部门在高温来临前完成提前部署。
              </p>
 
-             <div class="context-grid" aria-label="数据口径与分析场景">
-               <article class="context-card">
-                 <span class="context-label">Risk Scenario</span>
-                 <strong id="risk-context-title" class="context-title">--</strong>
-                 <p id="risk-context-detail" class="context-detail">--</p>
+             <div class="context-grid" aria-label="真实天气与历史推演双轨场景">
+               <article class="track-card track-card-live">
+                 <div class="track-head">
+                   <span class="context-label">Live Weather</span>
+                   <span id="live-track-chip" class="track-chip">--</span>
+                 </div>
+                 <strong id="live-track-title" class="track-title">--</strong>
+                 <p id="live-track-detail" class="track-detail">--</p>
+                 <div class="track-metrics" aria-label="实时真实监测指标">
+                   <div class="track-metric">
+                     <span>当前温度</span>
+                     <strong id="live-metric-current">--</strong>
+                   </div>
+                   <div class="track-metric">
+                     <span>24h最高温</span>
+                     <strong id="live-metric-max24">--</strong>
+                   </div>
+                   <div class="track-metric">
+                     <span>72h最高体感</span>
+                     <strong id="live-metric-app72">--</strong>
+                   </div>
+                 </div>
                </article>
-               <article class="context-card">
-                 <span class="context-label">Forecast Watch</span>
-                 <strong id="forecast-context-title" class="context-title">--</strong>
-                 <p id="forecast-context-detail" class="context-detail">--</p>
+               <article class="track-card track-card-history">
+                 <div class="track-head">
+                   <span class="context-label">Historical Case</span>
+                   <span id="history-track-chip" class="track-chip">--</span>
+                 </div>
+                 <strong id="history-track-title" class="track-title">--</strong>
+                 <p id="history-track-detail" class="track-detail">--</p>
+                 <div class="track-metrics" aria-label="历史热浪推演指标">
+                   <div class="track-metric">
+                     <span>峰值气温</span>
+                     <strong id="history-metric-maxtemp">--</strong>
+                   </div>
+                   <div class="track-metric">
+                     <span>峰值体感</span>
+                     <strong id="history-metric-maxapp">--</strong>
+                   </div>
+                   <div class="track-metric">
+                     <span>夜间最低体感</span>
+                     <strong id="history-metric-nightapp">--</strong>
+                   </div>
+                 </div>
                </article>
-               <article class="context-card">
+             </div>
+
+             <div class="context-bridge" aria-label="双轨解释与资源口径">
+               <article class="bridge-card bridge-card-note">
+                 <span class="context-label">Reality vs Scenario</span>
+                 <strong class="bridge-title">页面同时展示真实天气与默认风险推演</strong>
+                 <p id="scenario-compare-note" class="bridge-detail">--</p>
+               </article>
+               <article class="bridge-card bridge-card-resource">
                  <span class="context-label">Resource Scope</span>
-                 <strong id="resource-context-title" class="context-title">--</strong>
-                 <p id="resource-context-detail" class="context-detail">--</p>
+                 <strong id="resource-context-title" class="bridge-title">--</strong>
+                 <p id="resource-context-detail" class="bridge-detail">--</p>
                </article>
              </div>
 
@@ -396,12 +438,34 @@
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p id="trend-panel-kicker" class="panel-kicker">Forecast</p>
-                <div id="trend-panel-title" class="panel-title">72小时温度趋势</div>
+                <p id="dual-trend-kicker" class="panel-kicker">Weather Dual Track</p>
+                <div id="dual-trend-title" class="panel-title">真实预报 / 历史热浪对照</div>
               </div>
-              <span id="trend-panel-chip" class="panel-chip">Open-Meteo</span>
+              <span id="dual-trend-chip" class="panel-chip">Live + Archive</span>
             </div>
-            <div id="trend-chart" class="chart"></div>
+            <p id="dual-trend-note" class="panel-note">--</p>
+            <div class="dual-trend-grid">
+              <article class="mini-trend-card">
+                <div class="mini-trend-head">
+                  <div>
+                    <strong id="live-trend-title" class="mini-trend-title">--</strong>
+                    <p id="live-trend-detail" class="mini-trend-detail">--</p>
+                  </div>
+                  <span id="live-trend-chip" class="mini-trend-chip">--</span>
+                </div>
+                <div id="live-trend-chart" class="chart mini-chart"></div>
+              </article>
+              <article class="mini-trend-card mini-trend-card-history">
+                <div class="mini-trend-head">
+                  <div>
+                    <strong id="history-trend-title" class="mini-trend-title">--</strong>
+                    <p id="history-trend-detail" class="mini-trend-detail">--</p>
+                  </div>
+                  <span id="history-trend-chip" class="mini-trend-chip">--</span>
+                </div>
+                <div id="history-trend-chart" class="chart mini-chart"></div>
+              </article>
+            </div>
           </div>
 
           <div class="panel">
@@ -556,6 +620,6 @@
         </div>
       </footer>
     </div>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260424-ui-fix3"></script>
   </body>
 </html>

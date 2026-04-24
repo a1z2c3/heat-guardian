@@ -321,7 +321,7 @@ function setVisualMode(mode, { persist = true, updateUrl = true, rerender = true
   updateVisualModeButtons(resolved);
 
   if (rerender && appState.dashboard) {
-    renderDashboard();
+    const renderErrors = renderDashboard();
   }
 }
 
@@ -410,6 +410,19 @@ function formatDateTime(value) {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+  });
+}
+
+function formatDateLabel(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value).replace("T", " ").slice(0, 10);
+  }
+  return date.toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
   });
 }
 
@@ -575,6 +588,13 @@ function formatWindowLabel(startTime, endTime) {
     });
   };
   return `${formatPart(startTime)} - ${formatPart(endTime)}`;
+}
+
+function getTrendWindowLabel(trend) {
+  if (!Array.isArray(trend) || !trend.length) {
+    return "--";
+  }
+  return formatWindowLabel(trend[0]?.time, trend[trend.length - 1]?.time);
 }
 
 function normalizePoiCategory(item) {
@@ -1072,7 +1092,7 @@ function renderOpsRibbon() {
   const items = [
     {
       label: "Heat Window",
-      title: derived.analysisProfileType === "historical_heatwave_case" ? "当前监测 / 历史案例" : "未来 24h 峰值",
+      title: derived.analysisProfileType === "historical_heatwave_case" ? "实时监测 / 默认推演" : "未来 24h 峰值",
       value:
         derived.forecast?.next_24h_max_temperature !== null &&
         derived.forecast?.next_24h_max_temperature !== undefined
@@ -1080,7 +1100,7 @@ function renderOpsRibbon() {
           : "--",
       meta:
         derived.analysisProfileType === "historical_heatwave_case"
-          ? `当前监测 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃；风险推演采用 ${derived.analysisWindow} 的真实热浪案例。`
+          ? `真实日期 ${derived.liveDateLabel}，当前温度 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃；默认风险推演采用 ${derived.historicalWindow} 的真实热浪案例。`
           : `当前 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃，风险推演直接使用未来72小时预报。`,
       tone: "warm",
     },
@@ -1596,6 +1616,11 @@ function buildDerivedState() {
   const weather = dashboard.weather || {};
   const forecast = weather.forecast || {};
   const analysisProfile = weather.analysis_profile || {};
+  const forecastTrend = forecast.trend?.length ? forecast.trend : weather.trend || [];
+  const historicalCase =
+    weather.historical_heatwave_case ||
+    (analysisProfile.profile_type === "historical_heatwave_case" ? analysisProfile : null);
+  const historicalTrend = historicalCase?.trend?.length ? historicalCase.trend : [];
   const warningSignals = weather.warning_signals || {};
   const accessibility = dashboard.accessibility || {};
   const accessibilityScopes = accessibility.resource_scopes || {};
@@ -1660,6 +1685,9 @@ function buildDerivedState() {
     weather,
     forecast,
     analysisProfile,
+    forecastTrend,
+    historicalCase,
+    historicalTrend,
     warningSignals,
     forecastWarning,
     analysisWarning,
@@ -1696,6 +1724,13 @@ function buildDerivedState() {
     topCells,
     riskContextLabel: weather.risk_context_label || analysisProfile.context_label || "--",
     analysisWindow: formatWindowLabel(analysisProfile.start_time, analysisProfile.end_time),
+    liveDateLabel: formatDateLabel(forecast.generated_at || weather.generated_at || forecastTrend[0]?.time),
+    forecastWindow: getTrendWindowLabel(forecastTrend),
+    historicalWindow:
+      formatWindowLabel(
+        historicalCase?.start_time || historicalTrend[0]?.time,
+        historicalCase?.end_time || historicalTrend[historicalTrend.length - 1]?.time
+      ),
     officialVerifiedCount:
       officialSummary.verified_site_count ||
       officialSites.filter((item) => item.source_verified).length,
@@ -3017,13 +3052,26 @@ function renderRecommendationNote() {
       : ""}`;
 }
 
-function renderTrendChart(trend) {
+function renderTrendChart(containerId, trend, options = {}) {
+  const {
+    emptyText = "暂无天气趋势数据。",
+    axisFormatter = (item) => (item?.time ? item.time.slice(5, 16).replace("T", " ") : "--"),
+    tempName = "温度",
+    apparentName = "体感温度",
+    tempColor = palette.accent,
+    tempAreaTop = "rgba(123, 183, 255, 0.24)",
+    tempAreaBottom = "rgba(123, 183, 255, 0.02)",
+    apparentColor = palette.danger,
+    apparentAreaTop = "rgba(255, 126, 100, 0.18)",
+    apparentAreaBottom = "rgba(255, 126, 100, 0.02)",
+  } = options;
+
   if (!trend.length) {
-    renderChartFallback("trend-chart", "暂无天气趋势数据。");
+    renderChartFallback(containerId, emptyText);
     return;
   }
 
-  const chart = getChart("trend-chart");
+  const chart = getChart(containerId);
   if (!chart) return;
 
   chart.setOption({
@@ -3032,7 +3080,7 @@ function renderTrendChart(trend) {
     grid: { left: 42, right: 20, top: 40, bottom: 34 },
     xAxis: {
       type: "category",
-      data: trend.map((item) => item.time.slice(5, 16).replace("T", " ")),
+      data: trend.map((item, index) => axisFormatter(item, index)),
       axisLabel: { ...baseAxisLabel(), showMaxLabel: true, showMinLabel: true },
       axisLine: { lineStyle: { color: palette.line } },
     },
@@ -3043,28 +3091,56 @@ function renderTrendChart(trend) {
     },
     series: [
       {
-        name: "温度",
+        name: tempName,
         type: "line",
         smooth: true,
         symbol: "none",
         data: trend.map((item) => item.temperature),
-        lineStyle: { color: palette.accent, width: 3 },
+        lineStyle: { color: tempColor, width: 3 },
         areaStyle: {
-          color: gradient("rgba(123, 183, 255, 0.24)", "rgba(123, 183, 255, 0.02)"),
+          color: gradient(tempAreaTop, tempAreaBottom),
         },
       },
       {
-        name: "体感温度",
+        name: apparentName,
         type: "line",
         smooth: true,
         symbol: "none",
         data: trend.map((item) => item.apparent_temperature),
-        lineStyle: { color: palette.danger, width: 2.5 },
+        lineStyle: { color: apparentColor, width: 2.5 },
         areaStyle: {
-          color: gradient("rgba(255, 126, 100, 0.18)", "rgba(255, 126, 100, 0.02)"),
+          color: gradient(apparentAreaTop, apparentAreaBottom),
         },
       },
     ],
+  });
+}
+
+function renderTrendComparison() {
+  const derived = buildDerivedState();
+
+  renderTrendChart("live-trend-chart", derived.forecastTrend || [], {
+    emptyText: "暂无实时预报趋势。",
+    tempName: "实时气温",
+    apparentName: "实时体感",
+    tempColor: palette.accent,
+    tempAreaTop: "rgba(123, 183, 255, 0.24)",
+    tempAreaBottom: "rgba(123, 183, 255, 0.02)",
+    apparentColor: palette.teal,
+    apparentAreaTop: "rgba(57, 208, 186, 0.18)",
+    apparentAreaBottom: "rgba(57, 208, 186, 0.02)",
+  });
+
+  renderTrendChart("history-trend-chart", derived.historicalTrend || [], {
+    emptyText: "暂无历史热浪趋势。",
+    tempName: "历史气温",
+    apparentName: "历史体感",
+    tempColor: palette.amber,
+    tempAreaTop: "rgba(242, 185, 103, 0.22)",
+    tempAreaBottom: "rgba(242, 185, 103, 0.02)",
+    apparentColor: palette.danger,
+    apparentAreaTop: "rgba(255, 126, 100, 0.18)",
+    apparentAreaBottom: "rgba(255, 126, 100, 0.02)",
   });
 }
 
@@ -3261,8 +3337,21 @@ function renderHeroSummary() {
   setText("hero-strategy", humanizeStrategy(derived.optimization.strategy));
   animateCounter("experiment-count", getExperimentsCount(derived.experiments), (current) => `${formatNumber(Math.round(current))} 组`);
 
+  const historicalCaseLabel = derived.historicalCase?.case_label || "历史热浪案例";
+  const historicalSeasonYear = derived.historicalCase?.season_year || "--";
+  const historicalWindowLabel =
+    derived.historicalWindow && derived.historicalWindow !== "--"
+      ? derived.historicalWindow
+      : derived.analysisWindow;
+  const livePeakTemperature = formatDecimal(derived.forecast?.next_72h_max_temperature, 1);
+  const livePeakApparent = formatDecimal(derived.forecast?.next_72h_max_apparent_temperature, 1);
+  const weatherModeLabel =
+    derived.analysisProfileType === "historical_heatwave_case"
+      ? "实时天气 + 历史热浪推演"
+      : "实时天气直连";
+
   const statusParts = [
-    humanizeProfileType(derived.analysisProfileType),
+    weatherModeLabel,
     humanizeDataLevel(derived.firstFeature.population_data_level || "worldpop_raster"),
     humanizeDataLevel(derived.dashboard.accessibility?.data_level),
     derived.activeCoolingLabel,
@@ -3270,18 +3359,44 @@ function renderHeroSummary() {
   ].filter(Boolean);
   setText("data-status", statusParts.join(" · "));
 
-  setText("risk-context-title", humanizeProfileType(derived.analysisProfileType));
-  setText("risk-context-detail", derived.riskContextLabel);
   setText(
-    "forecast-context-title",
-    `${formatDecimal(derived.forecast?.next_24h_max_temperature, 1)}℃ / ${formatDecimal(
-      derived.forecast?.next_72h_max_apparent_temperature,
-      1
-    )}℃`
+    "live-track-chip",
+    derived.liveDateLabel === "--" ? "实时监测" : `真实日期 ${derived.liveDateLabel}`
   );
   setText(
-    "forecast-context-detail",
-    `当前监测窗口 24h 最高温 / 72h 最高体感温度；当前温度 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃。`
+    "live-track-title",
+    derived.forecastWarning.level >= 2 ? "当前真实监测已进入高温关注" : "当前真实监测未触发热浪阈值"
+  );
+  setText(
+    "live-track-detail",
+    `今天是 ${derived.liveDateLabel}。未来72小时最高温 ${livePeakTemperature}℃、最高体感 ${livePeakApparent}℃；${derived.forecastWarning.summary}`
+  );
+  setText("live-metric-current", formatDecimal(derived.forecast?.current_temperature, 1), "℃");
+  setText("live-metric-max24", formatDecimal(derived.forecast?.next_24h_max_temperature, 1), "℃");
+  setText("live-metric-app72", livePeakApparent, "℃");
+  setText(
+    "history-track-chip",
+    derived.analysisProfileType === "historical_heatwave_case" ? "默认风险推演" : "历史对照案例"
+  );
+  setText("history-track-title", historicalCaseLabel);
+  setText(
+    "history-track-detail",
+    derived.analysisProfileType === "historical_heatwave_case"
+      ? `默认风险推演采用 ${historicalSeasonYear} 年真实历史热浪案例，窗口 ${historicalWindowLabel}，用于在非热浪当天展示“真热浪来时如何调度”。`
+      : `当前默认风险直接使用实时预报；仍保留 ${historicalSeasonYear} 年历史热浪案例（${historicalWindowLabel}）作为对照演示。`
+  );
+  setText("history-metric-maxtemp", formatDecimal(derived.historicalCase?.max_temperature, 1), "℃");
+  setText("history-metric-maxapp", formatDecimal(derived.historicalCase?.max_apparent_temperature, 1), "℃");
+  setText(
+    "history-metric-nightapp",
+    formatDecimal(derived.historicalCase?.night_min_apparent_temperature, 1),
+    "℃"
+  );
+  setText(
+    "scenario-compare-note",
+    derived.analysisProfileType === "historical_heatwave_case"
+      ? `左侧是真实当前天气：${derived.liveDateLabel}，未来72小时最高仅 ${livePeakTemperature}℃ / 体感 ${livePeakApparent}℃。右侧才是默认风险推演：${historicalSeasonYear} 年历史热浪案例，窗口 ${historicalWindowLabel}。八月时间来自推演场景，不是当前系统时间。`
+      : `当前默认风险场景就是实时预报；历史热浪案例仅保留为对照参考，不会替代今天的真实日期。`
   );
   setText("resource-context-title", `${derived.allSupportLabel} vs ${derived.activeCoolingLabel}`);
   setText(
@@ -3291,26 +3406,55 @@ function renderHeroSummary() {
       `${derived.officialCoolingLabel} 已校准 ${formatNumber(derived.officialSites.length)} 个点位。`
   );
   setText(
-    "trend-panel-kicker",
-    derived.analysisProfileType === "historical_heatwave_case" ? "Heatwave Case" : "Forecast"
+    "dual-trend-kicker",
+    derived.analysisProfileType === "historical_heatwave_case" ? "Live vs Historical" : "Forecast vs Reference"
   );
   setText(
-    "trend-panel-title",
-    derived.analysisProfileType === "historical_heatwave_case" ? "默认分析场景 72 小时趋势" : "未来72小时温度趋势"
+    "dual-trend-title",
+    derived.analysisProfileType === "historical_heatwave_case" ? "实时预报 / 默认推演热浪对照" : "实时预报 / 历史热浪对照"
   );
   setText(
-    "trend-panel-chip",
-    derived.analysisProfileType === "historical_heatwave_case" ? "Open-Meteo Archive" : "Open-Meteo Forecast"
+    "dual-trend-chip",
+    derived.analysisProfileType === "historical_heatwave_case" ? "Forecast + Archive" : "Forecast First"
   );
+  setText(
+    "dual-trend-note",
+    derived.analysisProfileType === "historical_heatwave_case"
+      ? `左图展示 ${derived.liveDateLabel} 起 72 小时真实预报，右图展示 ${historicalSeasonYear} 年 ${historicalWindowLabel} 的历史热浪案例；两条时间线分开展示，避免把历史八月窗口误读成今天实况。`
+      : `左图是当前真实预报，右图保留历史热浪案例用于答辩对照。`
+  );
+  setText("live-trend-title", "实时预报 72 小时");
+  setText(
+    "live-trend-detail",
+    `${derived.forecastWindow} · 当前温度 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃`
+  );
+  setText("live-trend-chip", "Open-Meteo Forecast");
+  setText("history-trend-title", historicalCaseLabel);
+  setText(
+    "history-trend-detail",
+    `${historicalSeasonYear} 年窗口 ${historicalWindowLabel} · 历史热浪案例，不是当前实况`
+  );
+  setText("history-trend-chip", "Open-Meteo Archive");
 
   const insightElement = byId("hero-insight");
   if (!insightElement) return;
+  const scenarioNarrative =
+    derived.analysisProfileType === "historical_heatwave_case"
+      ? `未达到热浪阈值，因此默认风险调度切换到 ${historicalCaseLabel}${
+          historicalWindowLabel !== "--" ? `（${historicalWindowLabel}）` : ""
+        }。`
+      : "当前默认风险场景直接使用实时预报。";
+  const officialNarrative = derived.officialSites.length
+    ? `研究区内已接入 ${derived.officialSites.length} 个官方在运纳凉点；`
+    : "";
+
   insightElement.textContent =
-    `${derived.riskContextLabel}` +
+    `当前真实日期 ${derived.liveDateLabel}，未来72小时最高温 ${livePeakTemperature}℃ / 最高体感 ${livePeakApparent}℃，` +
+    scenarioNarrative +
     `${topDistrict.district || "当前重点城区"} 当前风险最高；` +
     `${derived.optimization.high_risk_cell_count || 0} 个高风险网格中，仅 ` +
     `${derived.optimization.coverage_reachable_high_risk_cell_count || 0} 个可在 15 分钟阈值内通过候选点新增覆盖。` +
-    `${derived.officialSites.length ? `研究区内已接入 ${derived.officialSites.length} 个官方在运纳凉点；` : ""}` +
+    officialNarrative +
     `默认 ${derived.defaultScenarioCount || "--"} 点方案相对 ${derived.activeCoolingLabel} 基线可新增覆盖 ` +
     `${formatNumber(defaultScenario?.metrics?.coverage_improvement_population || 0)} 人，` +
     `并把平均到达时间压缩到 ${formatDecimal(defaultScenario?.metrics?.average_travel_minutes, 2) || "--"} 分钟。`;
@@ -3668,36 +3812,64 @@ function renderSummaryCards() {
   }
 }
 
+function runRenderStep(label, renderFn, errors) {
+  try {
+    renderFn();
+  } catch (error) {
+    console.error(`render step failed: ${label}`, error);
+    errors.push(label);
+  }
+}
+
+function summarizeRenderErrors(errors) {
+  if (!errors.length) return "";
+  if (errors.length <= 3) {
+    return `部分模块渲染失败：${errors.join("、")}。`;
+  }
+  return `部分模块渲染失败：${errors.slice(0, 3).join("、")} 等 ${errors.length} 项。`;
+}
+
 function renderDashboard() {
-  const derived = buildDerivedState();
-  bindCommandNav();
-  setupSectionObservers();
-  renderSummaryCards();
-  renderHeroSummary();
-  renderHeroEvidenceStrip();
-  renderHeroSpectrum();
-  renderSignalTicker();
-  renderWorkflowStrip();
-  renderOpsRibbon();
-  renderPoiList(appState.dashboard?.poi?.categories || []);
-  renderSpatialBoard();
-  renderSiteSpotlight();
-  renderRecommendations();
-  renderModelInsights();
-  renderWarningBoard();
-  renderOfficialCoolingPanel();
-  renderEvidenceBoard();
-  renderRecommendationNote();
-  renderRoleSwitcher();
-  renderRoleBriefing();
-  renderScenarioSwitcher();
-  renderScenarioFocus();
-  renderScenarioChart();
-  renderTrendChart(derived.analysisTrend || []);
-  renderHeatmap(appState.grid?.features || []);
-  renderDistrictChart(appState.dashboard?.risk_summary?.districts || []);
-  setupInteractiveChrome();
-  updateSectionHud(document.body.dataset.activeSection || "section-overview");
+  const errors = [];
+
+  runRenderStep("command-nav", bindCommandNav, errors);
+  runRenderStep("section-observer", setupSectionObservers, errors);
+  runRenderStep("summary-cards", renderSummaryCards, errors);
+  runRenderStep("hero-summary", renderHeroSummary, errors);
+  runRenderStep("hero-evidence", renderHeroEvidenceStrip, errors);
+  runRenderStep("hero-spectrum", renderHeroSpectrum, errors);
+  runRenderStep("signal-ticker", renderSignalTicker, errors);
+  runRenderStep("workflow-strip", renderWorkflowStrip, errors);
+  runRenderStep("ops-ribbon", renderOpsRibbon, errors);
+  runRenderStep("poi-list", () => renderPoiList(appState.dashboard?.poi?.categories || []), errors);
+  runRenderStep("spatial-board", renderSpatialBoard, errors);
+  runRenderStep("site-spotlight", renderSiteSpotlight, errors);
+  runRenderStep("recommendations", renderRecommendations, errors);
+  runRenderStep("model-insights", renderModelInsights, errors);
+  runRenderStep("warning-board", renderWarningBoard, errors);
+  runRenderStep("official-cooling", renderOfficialCoolingPanel, errors);
+  runRenderStep("evidence-board", renderEvidenceBoard, errors);
+  runRenderStep("recommendation-note", renderRecommendationNote, errors);
+  runRenderStep("role-switcher", renderRoleSwitcher, errors);
+  runRenderStep("role-briefing", renderRoleBriefing, errors);
+  runRenderStep("scenario-switcher", renderScenarioSwitcher, errors);
+  runRenderStep("scenario-focus", renderScenarioFocus, errors);
+  runRenderStep("scenario-chart", renderScenarioChart, errors);
+  runRenderStep("trend-comparison", renderTrendComparison, errors);
+  runRenderStep("heatmap", () => renderHeatmap(appState.grid?.features || []), errors);
+  runRenderStep(
+    "district-chart",
+    () => renderDistrictChart(appState.dashboard?.risk_summary?.districts || []),
+    errors
+  );
+  runRenderStep("interactive-chrome", setupInteractiveChrome, errors);
+  runRenderStep(
+    "section-hud",
+    () => updateSectionHud(document.body.dataset.activeSection || "section-overview"),
+    errors
+  );
+
+  return errors;
 }
 
 async function bootstrapLegacy() {
@@ -3724,7 +3896,7 @@ async function bootstrapLegacy() {
     appState.grid = gridResult.status === "fulfilled" ? gridResult.value : { features: [] };
     appState.selectedScenarioCount = appState.selectedScenarioCount || getDefaultScenarioCount(appState.dashboard);
 
-    renderDashboard();
+    const renderErrors = renderDashboard();
 
     const generatedAt =
       appState.dashboard.optimization?.generated_at ||
@@ -3744,6 +3916,13 @@ async function bootstrapLegacy() {
         "数据已载入，但图表库未加载。",
         "warning",
         `文本结果正常，图表已降级为空状态；最近更新 ${formatDateTime(generatedAt)}。`,
+        true
+      );
+    } else if (renderErrors.length) {
+      setStatus(
+        "主要数据已载入，但部分模块渲染失败。",
+        "warning",
+        `${summarizeRenderErrors(renderErrors)} 最近更新 ${formatDateTime(generatedAt)}。`,
         true
       );
     } else {
@@ -3791,7 +3970,7 @@ async function bootstrap() {
     appState.grid = gridResult.status === "fulfilled" ? gridResult.value : { features: [] };
     appState.selectedScenarioCount = appState.selectedScenarioCount || getDefaultScenarioCount(appState.dashboard);
 
-    renderDashboard();
+    const renderErrors = renderDashboard();
 
     const generatedAt =
       appState.dashboard.optimization?.generated_at ||
@@ -3811,6 +3990,13 @@ async function bootstrap() {
         "数据已载入，但图表库未加载。",
         "warning",
         `文本结果正常，图表已降级为空状态；最近更新 ${formatDateTime(generatedAt)}。`,
+        true
+      );
+    } else if (renderErrors.length) {
+      setStatus(
+        "主要数据已载入，但部分模块渲染失败。",
+        "warning",
+        `${summarizeRenderErrors(renderErrors)} 最近更新 ${formatDateTime(generatedAt)}。`,
         true
       );
     } else {

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import shutil
 import zipfile
@@ -11,6 +11,7 @@ from common import DATA_DIR, current_timestamp, read_json, write_json
 
 
 USER_AGENT = "reling-guard/0.2"
+REMOTE_REFRESH_TTL_HOURS = 24
 EXTERNAL_DIR = DATA_DIR / "external"
 WORLDPOP_DIR = EXTERNAL_DIR / "worldpop"
 GEOFABRIK_DIR = EXTERNAL_DIR / "geofabrik"
@@ -28,6 +29,25 @@ WORLDPOP_CANONICAL_FILES = {
 def ensure_external_dirs() -> None:
     for path in (EXTERNAL_DIR, WORLDPOP_DIR, GEOFABRIK_DIR, GEOFABRIK_HUBEI_DIR):
         path.mkdir(parents=True, exist_ok=True)
+
+
+def checked_recently(checked_at: str | None, *, hours: int = REMOTE_REFRESH_TTL_HOURS) -> bool:
+    if not checked_at:
+        return False
+    try:
+        checked_time = datetime.fromisoformat(checked_at)
+        now = datetime.fromisoformat(current_timestamp())
+    except ValueError:
+        return False
+    return (now - checked_time) <= timedelta(hours=hours)
+
+
+def geofabrik_assets_ready() -> bool:
+    return GEOFABRIK_ZIP_PATH.exists() and (GEOFABRIK_HUBEI_DIR / "gis_osm_roads_free_1.shp").exists()
+
+
+def worldpop_assets_ready() -> bool:
+    return all(path.exists() for path in WORLDPOP_CANONICAL_FILES.values())
 
 
 def request_with_retry(
@@ -144,6 +164,21 @@ def clear_directory_contents(directory: Path) -> None:
 
 def update_geofabrik(manifest: dict) -> None:
     geofabrik_manifest = manifest.get("geofabrik", {})
+    if checked_recently(geofabrik_manifest.get("checked_at")) and geofabrik_assets_ready():
+        manifest.setdefault("geofabrik", {}).update(
+            {
+                "status": "recent_cache_skip",
+                "source_url": GEOFABRIK_URL,
+                "zip_path": str(GEOFABRIK_ZIP_PATH),
+                "extract_dir": str(GEOFABRIK_HUBEI_DIR),
+                "checked_at": geofabrik_manifest.get("checked_at"),
+                "skip_reason": f"recently_checked_within_{REMOTE_REFRESH_TTL_HOURS}h",
+            }
+        )
+        print(f"Geofabrik 最近 {REMOTE_REFRESH_TTL_HOURS} 小时内已检查，复用本地缓存。")
+        return
+
+    print("检查 Geofabrik 湖北路网数据...")
     remote_info = probe_remote_file(GEOFABRIK_URL)
 
     if remote_info is None:
@@ -162,6 +197,7 @@ def update_geofabrik(manifest: dict) -> None:
     extracted_missing = not (GEOFABRIK_HUBEI_DIR / "gis_osm_roads_free_1.shp").exists()
 
     if zip_changed:
+        print("检测到 Geofabrik 远端快照变化，开始下载并解压...")
         download_info = stream_download(GEOFABRIK_URL, GEOFABRIK_ZIP_PATH)
         clear_directory_contents(GEOFABRIK_HUBEI_DIR)
         with zipfile.ZipFile(GEOFABRIK_ZIP_PATH, "r") as archive:
@@ -178,6 +214,7 @@ def update_geofabrik(manifest: dict) -> None:
         return
 
     if extracted_missing:
+        print("Geofabrik 压缩包存在但解压目录缺失，重新解压本地缓存...")
         clear_directory_contents(GEOFABRIK_HUBEI_DIR)
         with zipfile.ZipFile(GEOFABRIK_ZIP_PATH, "r") as archive:
             archive.extractall(GEOFABRIK_HUBEI_DIR)
@@ -201,6 +238,7 @@ def update_geofabrik(manifest: dict) -> None:
         "remote": remote_info,
         "checked_at": current_timestamp(),
     }
+    print("Geofabrik 已是最新，无需重新下载。")
 
 
 def build_worldpop_url(age_code: str, data_year: int, release: str) -> str:
@@ -270,12 +308,14 @@ def probe_worldpop_pair(candidate: dict) -> tuple[dict | None, dict | None]:
 
 
 def detect_latest_worldpop_bundle(manifest: dict | None = None) -> dict:
+    print("探测 WorldPop 中国年龄结构栅格最新可用版本...")
     for candidate in iterate_worldpop_candidates(manifest):
         age65_info, age80_info = probe_worldpop_pair(candidate)
         if age65_info is None:
             continue
         if age80_info is None:
             continue
+        print(f"已定位 WorldPop 可用版本：{candidate['release']} / {candidate['data_year']}")
         return {
             "data_year": candidate["data_year"],
             "release": candidate["release"],
@@ -295,6 +335,22 @@ def cleanup_worldpop_dir() -> None:
 
 def update_worldpop(manifest: dict) -> None:
     worldpop_manifest = manifest.get("worldpop", {})
+    if checked_recently(worldpop_manifest.get("checked_at")) and worldpop_assets_ready():
+        manifest.setdefault("worldpop", {}).update(
+            {
+                "status": "recent_cache_skip",
+                "source": worldpop_manifest.get("source", "WorldPop official age-sex structures"),
+                "country": worldpop_manifest.get("country", "CHN"),
+                "resolution": worldpop_manifest.get("resolution", "1km_ua_constrained"),
+                "data_year": worldpop_manifest.get("data_year"),
+                "release": worldpop_manifest.get("release"),
+                "checked_at": worldpop_manifest.get("checked_at"),
+                "skip_reason": f"recently_checked_within_{REMOTE_REFRESH_TTL_HOURS}h",
+            }
+        )
+        print(f"WorldPop 最近 {REMOTE_REFRESH_TTL_HOURS} 小时内已检查，复用本地缓存。")
+        return
+
     latest_bundle = detect_latest_worldpop_bundle(worldpop_manifest)
 
     for key, age_code in (("age65", "65"), ("age80", "80")):
@@ -302,6 +358,7 @@ def update_worldpop(manifest: dict) -> None:
         remote_info = latest_bundle[key]
         local_info = (worldpop_manifest.get("files") or {}).get(key, {})
         if remote_changed(remote_info, local_info.get("remote"), canonical_path):
+            print(f"检测到 WorldPop {age_code}+ 栅格更新，开始下载...")
             download_info = stream_download(latest_bundle[f"{key}_url"], canonical_path)
             local_info = {
                 "path": str(canonical_path),
@@ -330,12 +387,14 @@ def update_worldpop(manifest: dict) -> None:
             "checked_at": current_timestamp(),
         }
     )
+    print("WorldPop 检查完成。")
 
 
 def main() -> None:
     ensure_external_dirs()
     manifest = read_json(MANIFEST_PATH, {})
 
+    print("开始检查外部数据源缓存状态...")
     update_geofabrik(manifest)
     update_worldpop(manifest)
 

@@ -1,6 +1,6 @@
 {
   "project_name": "热龄卫士",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "study_area": {
     "city": "武汉",
     "display_name": "武汉主城区",
@@ -16,8 +16,8 @@
       "east": 114.5100
     },
     "grid": {
-      "rows": 10,
-      "cols": 14
+      "rows": 24,
+      "cols": 32
     },
     "district_hotspots": [
       {
