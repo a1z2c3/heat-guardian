@@ -802,7 +802,6 @@ def build_report_draft(
     report = report.replace("## 3. ", f"{authenticity_section}\n## 3. ", 1)
 
     (DOCS_DIR / "研究报告-热龄卫士.md").write_text(report, encoding="utf-8")
-    (DOCS_DIR / "研究报告初稿-热龄卫士.md").write_text(report, encoding="utf-8")
 
 
 def build_demo_script(
@@ -866,7 +865,7 @@ def build_demo_script(
 
 1. 打开 `outputs/report_tables/选址优化情景对比.csv`。
 2. 打开 `outputs/report_charts/02_平均到达时间对比.png`。
-3. 打开 `docs/研究报告初稿-热龄卫士.md`。
+3. 打开 `docs/研究报告-热龄卫士.md`。
 4. 打开 `docs/参赛文档/04-1-作品提交要求响应清单-热龄卫士.md`，强调材料不是临时拼的。
 
 ## 7. 结束语
@@ -1155,7 +1154,7 @@ def main() -> None:
     build_ai_usage_draft(submission_metadata)
     build_submission_checklist(submission_metadata)
 
-    print("实验图表、摘要表和报告初稿已生成。")
+    print("实验图表、摘要表和研究报告已生成。")
 
 
 if __name__ == "__main__":
