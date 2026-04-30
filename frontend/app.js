@@ -13,6 +13,21 @@ const palette = {
 };
 
 const VISUAL_MODE_KEY = "heat-guardian-visual-mode";
+const NAV_SECTION_ORDER = [
+  "section-overview",
+  "section-ops",
+  "section-spatial",
+  "section-analysis",
+  "section-warning",
+  "section-evidence",
+  "section-sites",
+];
+const SECTION_TRANSITION_DURATION_MS = 820;
+const SECTION_DECK_TRANSITION_DURATION_MS = 780;
+const SECTION_SWIPE_TOUCH_THRESHOLD = 72;
+const SECTION_WHEEL_THRESHOLD = 54;
+const SECTION_WHEEL_LOCK_MS = 940;
+const SECTION_PAGE_EDGE_TOLERANCE = 18;
 const VISUAL_MODES = {
   command: {
     themeColor: "#071018",
@@ -66,25 +81,25 @@ const VISUAL_MODES = {
 
 const EXTERNAL_REFERENCE_LINKS = [
   {
-    title: "WHO Heat And Health",
+    title: "WHO 高温与健康",
     meta: "政策依据 · 老年人与慢病人群是热健康高风险对象",
     value: "查看官方事实表",
     href: "https://www.who.int/news-room/fact-sheets/detail/climate-change-heat-and-health",
   },
   {
-    title: "Nature Health · Accessible Parks",
+    title: "Nature Health · 可达公园研究",
     meta: "论文依据 · 小而可达的城市公园可降低热相关死亡风险",
     value: "查看 Nature Health 论文",
     href: "https://www.nature.com/articles/s44360-025-00036-3",
   },
   {
-    title: "Cooling Center Siting Study",
+    title: "冷却中心选址研究",
     meta: "论文依据 · 冷却中心布点需考虑脆弱人群与可达性",
     value: "查看开放论文",
     href: "https://pmc.ncbi.nlm.nih.gov/articles/PMC10576472/",
   },
   {
-    title: "WorldPop Age-Sex Structures",
+    title: "WorldPop 年龄性别结构数据",
     meta: "数据依据 · 年龄结构栅格的官方发布说明",
     value: "查看 WorldPop 发布说明",
     href: "https://data.worldpop.org/repo/prj/Global_2015_2030/R2025A/doc/Global2_Release_Statement_R2025A_v1.pdf",
@@ -100,10 +115,24 @@ const EXTERNAL_REFERENCE_LINKS = [
 const appState = {
   dashboard: null,
   grid: { features: [] },
+  gridGeojson: { type: "FeatureCollection", features: [] },
   selectedRole: "street",
   selectedScenarioCount: null,
   mapFocus: null,
   visualMode: "command",
+};
+
+const spatialRuntime = {
+  map: null,
+  baseLayer: null,
+  baseLayers: null,
+  layerControl: null,
+  overlayLayers: [],
+  autoFitKey: null,
+  focusFlyKey: null,
+  tileLoadCount: 0,
+  tileErrorCount: 0,
+  visibleFitDone: false,
 };
 
 const chartRegistry = new Map();
@@ -116,6 +145,18 @@ let interactiveChromeBound = false;
 let visualModeBound = false;
 let scrollProgressBound = false;
 let heroAtmosphereBound = false;
+let kineticPresentationBound = false;
+let kineticSurfaceBound = false;
+let kineticControlBound = false;
+let kineticCursorBound = false;
+let thermalFieldBound = false;
+let pressureTitleBound = false;
+let sectionInputBound = false;
+let sectionTouchStart = null;
+let sectionTouchEdgeReady = false;
+let sectionTransitionTimer = null;
+let sectionWheelAccumulator = 0;
+let sectionWheelLockedUntil = 0;
 
 function byId(id) {
   return document.getElementById(id);
@@ -123,6 +164,51 @@ function byId(id) {
 
 function prefersReducedMotion() {
   return Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+}
+
+function closestElementTarget(event, selector) {
+  const target = event?.target;
+  return target instanceof Element ? target.closest(selector) : null;
+}
+
+function containsEventTarget(parent, target) {
+  return Boolean(parent && target instanceof Node && parent.contains(target));
+}
+
+function pulseElementSignal(element, delay = 0) {
+  if (!element || prefersReducedMotion()) return;
+  element.classList.remove("is-signal-ping");
+  element.style.setProperty("--signal-delay", `${delay}ms`);
+  void element.offsetWidth;
+  element.classList.add("is-signal-ping");
+  window.setTimeout(() => {
+    element.classList.remove("is-signal-ping");
+    element.style.removeProperty("--signal-delay");
+  }, 980 + delay);
+}
+
+function pulseDecisionSignals(root = document) {
+  if (prefersReducedMotion()) return;
+  const scopedRoot = root || document;
+  const activeSections = Array.from(scopedRoot.querySelectorAll?.(".is-page-active") || []);
+  const containers = activeSections.length ? activeSections : [scopedRoot];
+  const elements = [];
+
+  containers.forEach((container) => {
+    elements.push(
+      ...Array.from(
+        container.querySelectorAll?.(
+          ".track-metric, .aside-kpi, .focus-kpi, .summary-pill, .briefing-metric, .metric-row"
+        ) || []
+      )
+    );
+  });
+
+  Array.from(new Set(elements))
+    .slice(0, 8)
+    .forEach((element, index) => pulseElementSignal(element, index * 54));
+
+  pulseElementSignal(byId("command-nav"), 0);
 }
 
 function animateCounter(id, value, formatter, duration = 960) {
@@ -163,6 +249,20 @@ function animateCounter(id, value, formatter, duration = 960) {
   }
 
   const startValue = Number.isFinite(previousValue) ? previousValue : 0;
+  if (
+    window.HeatGuardianMotion?.animateCounter?.({
+      id,
+      element,
+      from: startValue,
+      to: numericValue,
+      formatter,
+      duration,
+    })
+  ) {
+    counterAnimations.delete(id);
+    return;
+  }
+
   const startTime = performance.now();
   element.classList.add("is-counting");
 
@@ -267,6 +367,448 @@ function setupHeroAtmosphere() {
   heroAtmosphereBound = true;
 }
 
+const KINETIC_CONTROL_SELECTOR =
+  ".command-link, .tool-button, .ghost-button, .visual-mode-button, .mini-button, .track-chip, .panel-chip, .status-chip";
+
+const KINETIC_SURFACE_SELECTOR =
+  ".hero-copy, .hero-aside, .track-card, .bridge-card, .hero-stage, .hero-callout, .hero-evidence-card, .summary-pill, .status-banner, .signal-ticker-shell, .workflow-shell, .workflow-step, .metrics-shell, .panel, .card, .briefing-card, .scenario-focus, .focus-card, .mini-panel, .site-card, .source-card, .metric-row, .action-card, .spotlight-card, .ops-item, .spotlight-metric, .site-stat, .spatial-stage";
+
+const KINETIC_TARGET_SELECTOR = `${KINETIC_CONTROL_SELECTOR}, ${KINETIC_SURFACE_SELECTOR}`;
+
+const THERMAL_FIELD_COLORS = {
+  default: {
+    primary: [12, 140, 125],
+    secondary: [31, 120, 209],
+    ember: [242, 185, 103],
+  },
+  "section-overview": {
+    primary: [12, 140, 125],
+    secondary: [31, 120, 209],
+    ember: [242, 185, 103],
+  },
+  "section-ops": {
+    primary: [15, 118, 110],
+    secondary: [69, 151, 194],
+    ember: [234, 159, 72],
+  },
+  "section-spatial": {
+    primary: [43, 132, 204],
+    secondary: [11, 148, 122],
+    ember: [255, 126, 100],
+  },
+  "section-analysis": {
+    primary: [31, 120, 209],
+    secondary: [12, 140, 125],
+    ember: [242, 185, 103],
+  },
+  "section-warning": {
+    primary: [213, 112, 69],
+    secondary: [31, 120, 209],
+    ember: [255, 126, 100],
+  },
+  "section-evidence": {
+    primary: [12, 140, 125],
+    secondary: [91, 141, 188],
+    ember: [224, 178, 83],
+  },
+  "section-sites": {
+    primary: [13, 132, 113],
+    secondary: [56, 132, 198],
+    ember: [255, 126, 100],
+  },
+};
+
+function getThermalFieldColors() {
+  const active = document.body?.dataset.activeSection || "section-overview";
+  return THERMAL_FIELD_COLORS[active] || THERMAL_FIELD_COLORS.default;
+}
+
+function formatRgb(color, alpha) {
+  return `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`;
+}
+
+function createThermalPoint(width, height, index, total) {
+  const row = Math.floor(index / 12);
+  const column = index % 12;
+  const jitterX = Math.sin(index * 9.71) * 58;
+  const jitterY = Math.cos(index * 6.33) * 44;
+  return {
+    x: ((column + 0.5) / 12) * width + jitterX,
+    y: ((row + 0.5) / Math.max(1, Math.ceil(total / 12))) * height + jitterY,
+    vx: 0.06 + (index % 5) * 0.012,
+    vy: -0.025 + (index % 7) * 0.01,
+    radius: 1.2 + (index % 4) * 0.38,
+    phase: index * 0.73,
+    pulse: 0.55 + (index % 6) * 0.08,
+  };
+}
+
+function setupThermalField() {
+  if (thermalFieldBound || prefersReducedMotion()) return;
+  const body = document.body;
+  if (!body) return;
+
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", { alpha: true });
+  if (!context) return;
+
+  canvas.className = "thermal-motion-canvas";
+  canvas.setAttribute("aria-hidden", "true");
+  body.prepend(canvas);
+
+  const pointer = { x: -1000, y: -1000, active: false };
+  let width = 0;
+  let height = 0;
+  let dpr = 1;
+  let points = [];
+
+  const resize = () => {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    canvas.width = Math.max(1, Math.floor(width * dpr));
+    canvas.height = Math.max(1, Math.floor(height * dpr));
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const pointCount = width < 720 ? 42 : width > 1440 ? 78 : 62;
+    points = Array.from({ length: pointCount }, (_, index) =>
+      createThermalPoint(width, height, index, pointCount)
+    );
+  };
+
+  const render = (now) => {
+    const time = now * 0.001;
+    const colors = getThermalFieldColors();
+
+    context.clearRect(0, 0, width, height);
+    const wash = context.createLinearGradient(0, 0, width, height);
+    wash.addColorStop(0, formatRgb(colors.primary, 0.045));
+    wash.addColorStop(0.52, "rgba(255, 255, 255, 0)");
+    wash.addColorStop(1, formatRgb(colors.secondary, 0.04));
+    context.fillStyle = wash;
+    context.fillRect(0, 0, width, height);
+
+    context.save();
+    context.globalCompositeOperation = "multiply";
+    points.forEach((point, index) => {
+      const waveX = Math.sin(time * point.pulse + point.phase) * 0.26;
+      const waveY = Math.cos(time * (point.pulse + 0.22) + point.phase) * 0.18;
+      point.x += point.vx + waveX;
+      point.y += point.vy + waveY;
+
+      if (pointer.active) {
+        const dx = point.x - pointer.x;
+        const dy = point.y - pointer.y;
+        const distance = Math.hypot(dx, dy);
+        if (distance > 0 && distance < 180) {
+          const force = (1 - distance / 180) * 2.1;
+          point.x += (dx / distance) * force;
+          point.y += (dy / distance) * force;
+        }
+      }
+
+      if (point.x > width + 80) point.x = -80;
+      if (point.x < -90) point.x = width + 70;
+      if (point.y > height + 70) point.y = -70;
+      if (point.y < -80) point.y = height + 60;
+
+      const alpha = 0.12 + Math.sin(time * 1.4 + point.phase) * 0.025;
+      const color = index % 5 === 0 ? colors.ember : index % 2 === 0 ? colors.secondary : colors.primary;
+      const glow = context.createRadialGradient(point.x, point.y, 0, point.x, point.y, point.radius * 16);
+      glow.addColorStop(0, formatRgb(color, alpha));
+      glow.addColorStop(0.42, formatRgb(color, alpha * 0.34));
+      glow.addColorStop(1, formatRgb(color, 0));
+      context.fillStyle = glow;
+      context.beginPath();
+      context.arc(point.x, point.y, point.radius * 16, 0, Math.PI * 2);
+      context.fill();
+
+      if (index % 3 === 0) {
+        context.strokeStyle = formatRgb(color, 0.08);
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(point.x - 24, point.y);
+        context.lineTo(point.x + 24, point.y + Math.sin(time + point.phase) * 8);
+        context.stroke();
+      }
+    });
+    context.restore();
+
+    window.requestAnimationFrame(render);
+  };
+
+  window.addEventListener("resize", resize);
+  window.addEventListener(
+    "pointermove",
+    (event) => {
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
+      pointer.active = true;
+    },
+    { passive: true }
+  );
+  window.addEventListener("pointerleave", () => {
+    pointer.active = false;
+  });
+
+  resize();
+  window.requestAnimationFrame(render);
+  thermalFieldBound = true;
+}
+
+function setupKineticCursor() {
+  if (kineticCursorBound || prefersReducedMotion()) return;
+  if (window.matchMedia && window.matchMedia("(hover: none)").matches) {
+    kineticCursorBound = true;
+    return;
+  }
+
+  const cursor = document.createElement("span");
+  cursor.className = "thermal-cursor";
+  cursor.setAttribute("aria-hidden", "true");
+  document.body.appendChild(cursor);
+  let activeTarget = null;
+  const pointerMoveEvent = "onpointerrawupdate" in window ? "pointerrawupdate" : "pointermove";
+
+  document.addEventListener(
+    pointerMoveEvent,
+    (event) => {
+      const samples = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : null;
+      const point = samples?.length ? samples[samples.length - 1] : event;
+      cursor.style.transform = `translate3d(${point.clientX - 17}px, ${point.clientY - 17}px, 0) scale(var(--cursor-scale))`;
+      document.body.classList.add("has-kinetic-cursor");
+    },
+    { passive: true }
+  );
+
+  document.addEventListener(
+    "pointerover",
+    (event) => {
+      activeTarget = closestElementTarget(event, KINETIC_TARGET_SELECTOR);
+      cursor.classList.toggle("is-over-target", Boolean(activeTarget));
+    },
+    { passive: true }
+  );
+
+  document.addEventListener(
+    "pointerout",
+    (event) => {
+      if (!activeTarget || containsEventTarget(activeTarget, event.relatedTarget)) return;
+      activeTarget = null;
+      cursor.classList.remove("is-over-target");
+    },
+    { passive: true }
+  );
+
+  document.addEventListener("pointerdown", () => {
+    cursor.classList.add("is-pressed");
+    window.setTimeout(() => cursor.classList.remove("is-pressed"), 72);
+  });
+
+  document.addEventListener("pointerleave", () => {
+    document.body.classList.remove("has-kinetic-cursor");
+    cursor.classList.remove("is-over-target");
+    activeTarget = null;
+  });
+
+  kineticCursorBound = true;
+}
+
+function setupPressureTitle() {
+  if (pressureTitleBound || prefersReducedMotion()) return;
+  if (window.matchMedia && window.matchMedia("(max-width: 760px)").matches) {
+    pressureTitleBound = true;
+    return;
+  }
+  const title = document.querySelector(".hero h1");
+  if (!title || title.dataset.pressureBound === "true") {
+    pressureTitleBound = true;
+    return;
+  }
+
+  const text = title.textContent.trim();
+  if (!text) return;
+  title.dataset.pressureBound = "true";
+  title.classList.add("pressure-title");
+  title.setAttribute("aria-label", text);
+  title.textContent = "";
+
+  Array.from(text).forEach((character, index) => {
+    const glyph = document.createElement("span");
+    glyph.className = "pressure-glyph";
+    glyph.textContent = character;
+    glyph.style.setProperty("--glyph-index", String(index));
+    glyph.style.setProperty("--glyph-pressure", "0");
+    glyph.style.setProperty("--glyph-drift", "0px");
+    title.appendChild(glyph);
+  });
+  const glyphs = Array.from(title.querySelectorAll(".pressure-glyph"));
+
+  const reset = () => {
+    glyphs.forEach((glyph) => {
+      glyph.style.setProperty("--glyph-pressure", "0");
+      glyph.style.setProperty("--glyph-drift", "0px");
+    });
+  };
+
+  title.addEventListener("pointermove", (event) => {
+    glyphs.forEach((glyph) => {
+      const rect = glyph.getBoundingClientRect();
+      const center = rect.left + rect.width / 2;
+      const distance = Math.abs(event.clientX - center);
+      const pressure = clampValue(1 - distance / 150, 0, 1);
+      glyph.style.setProperty("--glyph-pressure", pressure.toFixed(3));
+      glyph.style.setProperty("--glyph-drift", `${((event.clientX - center) * 0.018).toFixed(2)}px`);
+    });
+  });
+
+  title.addEventListener("pointerleave", reset);
+  title.addEventListener("pointercancel", reset);
+  pressureTitleBound = true;
+}
+
+function clearKineticControl(element) {
+  if (!element) return;
+  element.classList.remove("is-kinetic-control");
+  element.style.removeProperty("--magnet-x");
+  element.style.removeProperty("--magnet-y");
+}
+
+function setupKineticControls() {
+  if (kineticControlBound || prefersReducedMotion()) return;
+  let activeControl = null;
+
+  document.addEventListener(
+    "pointerover",
+    (event) => {
+      const control = closestElementTarget(event, KINETIC_CONTROL_SELECTOR);
+      if (activeControl && activeControl !== control) {
+        clearKineticControl(activeControl);
+      }
+      activeControl = control;
+    },
+    { passive: true }
+  );
+
+  document.addEventListener(
+    "pointermove",
+    (event) => {
+      const control = activeControl;
+      if (!control) return;
+
+      const rect = control.getBoundingClientRect();
+      const dx = event.clientX - rect.left - rect.width / 2;
+      const dy = event.clientY - rect.top - rect.height / 2;
+      control.classList.add("is-kinetic-control");
+      control.style.setProperty("--magnet-x", `${clampValue(dx * 0.13, -8, 8).toFixed(2)}px`);
+      control.style.setProperty("--magnet-y", `${clampValue(dy * 0.16, -7, 7).toFixed(2)}px`);
+      control.style.setProperty("--press-x", `${event.clientX - rect.left}px`);
+      control.style.setProperty("--press-y", `${event.clientY - rect.top}px`);
+    },
+    { passive: true }
+  );
+
+  document.addEventListener(
+    "pointerout",
+    (event) => {
+      if (!activeControl || containsEventTarget(activeControl, event.relatedTarget)) return;
+      clearKineticControl(activeControl);
+      activeControl = null;
+    },
+    { passive: true }
+  );
+
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      const control = activeControl || closestElementTarget(event, KINETIC_CONTROL_SELECTOR);
+      if (!control) return;
+      const rect = control.getBoundingClientRect();
+      control.style.setProperty("--press-x", `${event.clientX - rect.left}px`);
+      control.style.setProperty("--press-y", `${event.clientY - rect.top}px`);
+      control.classList.remove("is-kinetic-press");
+      void control.offsetWidth;
+      control.classList.add("is-kinetic-press");
+      window.setTimeout(() => control.classList.remove("is-kinetic-press"), 360);
+    },
+    { passive: true }
+  );
+
+  document.addEventListener("pointerleave", () => {
+    clearKineticControl(activeControl);
+    activeControl = null;
+  });
+
+  kineticControlBound = true;
+}
+
+function clearKineticSurface(surface) {
+  if (!surface) return;
+  surface.classList.remove("is-kinetic-lit");
+  surface.style.removeProperty("--spot-x");
+  surface.style.removeProperty("--spot-y");
+}
+
+function setupKineticSurfaces() {
+  if (kineticSurfaceBound || prefersReducedMotion()) return;
+  let activeSurface = null;
+
+  document.addEventListener(
+    "pointerover",
+    (event) => {
+      const surface = closestElementTarget(event, KINETIC_SURFACE_SELECTOR);
+      if (activeSurface && activeSurface !== surface) {
+        clearKineticSurface(activeSurface);
+      }
+      activeSurface = surface;
+    },
+    { passive: true }
+  );
+
+  document.addEventListener(
+    "pointermove",
+    (event) => {
+      const surface = activeSurface;
+      if (!surface) return;
+
+      const rect = surface.getBoundingClientRect();
+      surface.classList.add("is-kinetic-lit");
+      surface.style.setProperty("--spot-x", `${event.clientX - rect.left}px`);
+      surface.style.setProperty("--spot-y", `${event.clientY - rect.top}px`);
+    },
+    { passive: true }
+  );
+
+  document.addEventListener(
+    "pointerout",
+    (event) => {
+      if (!activeSurface || containsEventTarget(activeSurface, event.relatedTarget)) return;
+      clearKineticSurface(activeSurface);
+      activeSurface = null;
+    },
+    { passive: true }
+  );
+
+  document.addEventListener("pointerleave", () => {
+    clearKineticSurface(activeSurface);
+    activeSurface = null;
+  });
+
+  kineticSurfaceBound = true;
+}
+
+function setupKineticPresentation() {
+  if (kineticPresentationBound) return;
+  setupThermalField();
+  setupKineticCursor();
+  setupPressureTitle();
+  setupKineticControls();
+  setupKineticSurfaces();
+  kineticPresentationBound = true;
+}
+
 function normalizeVisualMode(value) {
   return VISUAL_MODES[value] ? value : "command";
 }
@@ -362,6 +904,9 @@ function setText(id, value, suffix = "") {
   if (!element) return;
   element.textContent =
     value === null || value === undefined || value === "--" ? "--" : `${value}${suffix}`;
+  if (window.HeatGuardianExtras && id === "data-status") {
+    window.HeatGuardianExtras.syncStatus({ tone: "ok" });
+  }
 }
 
 function formatNumber(value) {
@@ -459,7 +1004,11 @@ function humanizeSourceStatus(value) {
     up_to_date: "已与上游同步",
     downloaded: "已重新下载",
     re_extracted: "已重建本地缓存",
+    recovered_local_cache: "已恢复本地缓存",
     using_cached_snapshot: "使用本地缓存",
+    deferred_no_local_cache: "本地栅格未下载",
+    remote_refresh_failed_using_cache: "远端刷新失败，使用缓存",
+    remote_refresh_failed_no_cache: "远端刷新失败，无本地缓存",
     live: "实时抓取",
     cached_snapshot: "缓存快照",
     generated: "本地生成",
@@ -467,11 +1016,63 @@ function humanizeSourceStatus(value) {
   return map[value] || value || "--";
 }
 
+function hasWorldPopVersion(worldpop) {
+  return Boolean(worldpop?.data_year || worldpop?.release);
+}
+
+function getWorldPopVersionLabel(worldpop) {
+  if (hasWorldPopVersion(worldpop)) {
+    return [worldpop.data_year, worldpop.release].filter(Boolean).join(" / ");
+  }
+  return humanizeSourceStatus(worldpop?.status);
+}
+
+function getWorldPopUsageMeta(worldpop, populationDataLevel) {
+  const levelLabel = humanizeDataLevel(populationDataLevel || "demo_estimate");
+  const checkedAt = formatDateTime(worldpop?.checked_at);
+  if (hasWorldPopVersion(worldpop)) {
+    return `${levelLabel} · 检查 ${checkedAt}`;
+  }
+  return `${levelLabel} · WorldPop 栅格未下载 · 检查 ${checkedAt}`;
+}
+
+function getWorldPopSourceDetail(worldpop, populationDataLevel) {
+  if (hasWorldPopVersion(worldpop)) {
+    return `当前使用 CHN ${worldpop.data_year || "--"} ${worldpop.release || "--"} 的 1km 年龄结构栅格。`;
+  }
+  const levelLabel = humanizeDataLevel(populationDataLevel || "demo_estimate");
+  const reason =
+    worldpop?.skip_reason === "missing_worldpop_cache_deferred_to_keep_startup_responsive"
+      ? "可以接入 WorldPop；当前本机未下载本地栅格文件，启动流程为避免下载大文件先使用人口估算代理。"
+      : "当前没有可展示的 WorldPop 版本号。";
+  return `${reason}下载栅格并重新运行数据流水线后会显示正式版本；当前人口暴露结果使用${levelLabel}。`;
+}
+
+function getGeofabrikFreshnessMeta(geofabrik, prefix = "文件") {
+  if (geofabrik?.remote?.last_modified) {
+    return `${prefix} ${formatRemoteTimestamp(geofabrik.remote.last_modified)}`;
+  }
+  if (geofabrik?.download?.downloaded_at) {
+    return `本地缓存检查 ${formatDateTime(geofabrik.download.downloaded_at)}`;
+  }
+  return `最近检查 ${formatDateTime(geofabrik?.checked_at)}`;
+}
+
 function humanizeAuditStatus(value) {
   const map = {
     ok: "上游真实",
     warning: "真实输入 + 模型说明",
     fallback: "已触发回退",
+  };
+  return map[value] || value || "--";
+}
+
+function humanizeAuthenticityLabel(value) {
+  const map = {
+    real: "真实上游",
+    fallback: "回退数据",
+    warning: "需说明",
+    proxy: "代理变量",
   };
   return map[value] || value || "--";
 }
@@ -487,6 +1088,13 @@ function humanizeAuditStage(value) {
 
 function humanizeAuditLevel(value) {
   if (!value) return "--";
+  const map = {
+    raw_upstream: "原始上游数据",
+    external_dataset: "外部公开数据集",
+    processed_output: "模型处理结果",
+    missing_external: "外部数据缺失",
+  };
+  if (map[value]) return map[value];
   const dataLevel = humanizeDataLevel(value);
   if (dataLevel !== value) return dataLevel;
   const profileType = humanizeProfileType(value);
@@ -515,6 +1123,8 @@ function createExternalLink(label, href, className = "text-link") {
 
 function humanizeDataLevel(value) {
   const map = {
+    demo_estimate: "人口估算代理",
+    worldpop_like: "WorldPop 格式人口估算",
     worldpop_raster: "WorldPop 栅格",
     walk_network: "真实步行路网",
     hybrid_model: "综合风险模型",
@@ -603,6 +1213,8 @@ function normalizePoiCategory(item) {
     hospital: "医院",
     pharmacy: "药店",
     library: "图书馆",
+    shopping_mall: "购物中心",
+    subway_station: "地铁站",
     community_centre: "社区中心",
     social_facility: "养老服务设施",
     official_cooling_site: "官方纳凉点",
@@ -611,13 +1223,63 @@ function normalizePoiCategory(item) {
 }
 
 function normalizePoiName(name, categoryLabel, index = 0) {
-  if (!name) {
-    return `${categoryLabel}候选点 ${String(index + 1).padStart(2, "0")}`;
+  return getPoiDisplayName({ name, category_label: categoryLabel }, index);
+}
+
+function isRawOsmName(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return /OSM\s*未命名|未命名.*OSM|OSM.*\d{6,}|要素\s*#?\d{5,}|#\d{6,}/i.test(text);
+}
+
+function getPoiCategoryAlias(item) {
+  const category = normalizePoiCategory(item);
+  const aliases = {
+    公园: "开放绿地",
+    图书馆: "公共阅览空间",
+    医院: "医疗支撑",
+    药店: "药品补给",
+    购物中心: "室内商业空间",
+    地铁站: "交通避暑",
+    社区中心: "社区服务",
+    养老服务设施: "养老服务",
+  };
+  return aliases[category] || category;
+}
+
+function getPoiDisplayName(item, index = 0) {
+  const explicitName = String(item?.displayName || item?.display_name || "").trim();
+  if (explicitName && !isRawOsmName(explicitName)) {
+    return explicitName;
   }
-  if (/^\S+\d{6,}$/.test(name)) {
-    return `${categoryLabel}候选点 ${String(index + 1).padStart(2, "0")}`;
+
+  const namedSource = [item?.name, item?.source_name]
+    .map((value) => String(value || "").trim())
+    .find((value) => value && !isRawOsmName(value));
+  if (namedSource) {
+    return namedSource;
   }
-  return name;
+
+  const district = String(item?.district || "").trim();
+  const alias = getPoiCategoryAlias(item || {});
+  const base = `${district || "片区"}${alias}候选点`;
+  return item?.name_quality === "generated_from_unnamed_osm"
+    ? base
+    : `${base} ${String(index + 1).padStart(2, "0")}`;
+}
+
+function getPoiProvenanceLabel(item) {
+  if (!item || (item.name_quality !== "generated_from_unnamed_osm" && !isRawOsmName(item.source_name || item.name))) {
+    return "";
+  }
+  return "OSM实有要素，未标注正式名称";
+}
+
+function getPoiSourceDetail(item) {
+  const label = getPoiProvenanceLabel(item);
+  if (!label) return "";
+  const id = String(item?.poi_id || item?.id || "").trim();
+  return id ? `${label} · ID ${id}` : label;
 }
 
 function sumBy(items, getter) {
@@ -679,6 +1341,11 @@ function setStatus(title, tone = "loading", detail = "", canRetry = false) {
   }
   if (retryButton) {
     retryButton.classList.toggle("is-hidden", !canRetry);
+  }
+  window.HeatGuardianExtras?.syncStatus?.({ tone });
+  if (tone !== "loading") {
+    pulseElementSignal(banner, 40);
+    window.setTimeout(() => pulseDecisionSignals(), 72);
   }
 }
 
@@ -872,7 +1539,7 @@ function renderWorkflowStrip() {
   [
     {
       index: "01",
-      label: "Risk Scan",
+      label: "风险扫描",
       title: derived.topDistrict.district || "最高风险城区",
       value: `${formatNumber(derived.optimization.high_risk_cell_count || 0)} 个`,
       meta: `${derived.riskContextLabel} 当前最高风险城区为 ${derived.topDistrict.district || "--"}`,
@@ -880,7 +1547,7 @@ function renderWorkflowStrip() {
     },
     {
       index: "02",
-      label: "Access Check",
+      label: "可达核查",
       title: `${derived.allSupportLabel} 15 分钟可达`,
       value: formatPercent(derived.allSupportScope?.coverage_15min_rate, 0),
       meta:
@@ -890,7 +1557,7 @@ function renderWorkflowStrip() {
     },
     {
       index: "03",
-      label: "Scenario Test",
+      label: "方案测试",
       title: `新增 ${derived.selectedScenarioCount || "--"} 点方案`,
       value: formatPercent(scenario?.metrics?.coverage_rate_population, 1),
       meta: `平均到达时间较基线缩短 ${formatSignedMinutes(timeSaved).replace("+", "")}`,
@@ -898,7 +1565,7 @@ function renderWorkflowStrip() {
     },
     {
       index: "04",
-      label: "Site Action",
+      label: "点位落地",
       title: topSite?.displayName || "首位推荐点",
       value: `${formatNumber(scenario?.metrics?.coverage_improvement_population || 0)} 人`,
       meta: topSite
@@ -1019,6 +1686,7 @@ function renderHeroEvidenceStrip() {
   const derived = buildDerivedState();
   const worldpop = derived.dataSources.worldpop || {};
   const geofabrik = derived.dataSources.geofabrik || {};
+  const populationDataLevel = derived.firstFeature.population_data_level || "demo_estimate";
   const sourceBreakdown = derived.officialCooling?.source_status_breakdown || {};
   const latestGeneratedAt =
     derived.dashboard.optimization?.generated_at ||
@@ -1028,8 +1696,8 @@ function renderHeroEvidenceStrip() {
   const items = [
     {
       label: "WorldPop",
-      value: `${worldpop.data_year || "--"} / ${worldpop.release || "--"}`,
-      meta: `老年人口栅格 · 检查 ${formatDateTime(worldpop.checked_at)}`,
+      value: getWorldPopVersionLabel(worldpop),
+      meta: getWorldPopUsageMeta(worldpop, populationDataLevel),
     },
     {
       label: "Geofabrik",
@@ -1041,23 +1709,23 @@ function renderHeroEvidenceStrip() {
     },
     {
       label: "Open-Meteo",
-      value: derived.analysisProfileType === "historical_heatwave_case" ? "Forecast + Archive" : "Forecast",
+      value: derived.analysisProfileType === "historical_heatwave_case" ? "预报 + 历史归档" : "实时预报",
       meta: `最近生成 ${formatDateTime(derived.dashboard.weather?.generated_at)}`,
     },
     {
-      label: "Official",
+      label: "官方通报",
       value: `${formatNumber(derived.officialBulletins.length)} 页监测 / ${formatNumber(derived.officialVerifiedCount)} 点核验`,
-      meta: `live ${formatNumber(sourceBreakdown.live || 0)} · cached ${formatNumber(sourceBreakdown.cached_snapshot || 0)}`,
+      meta: `实时 ${formatNumber(sourceBreakdown.live || 0)} · 缓存 ${formatNumber(sourceBreakdown.cached_snapshot || 0)}`,
     },
     {
-      label: "Audit",
+      label: "真实性审计",
       value: derived.authenticityOverall?.verdict_label || "真实输入 + 模型推导",
       meta:
-        `fallback ${formatNumber(derived.authenticitySummary?.fallback_count || 0)} · ` +
-        `proxy ${formatNumber(derived.authenticitySummary?.proxy_count || 0)}`,
+        `回退 ${formatNumber(derived.authenticitySummary?.fallback_count || 0)} · ` +
+        `代理 ${formatNumber(derived.authenticitySummary?.proxy_count || 0)}`,
     },
     {
-      label: "Pipeline",
+      label: "数据流水线",
       value: formatDateTime(latestGeneratedAt),
       meta: "启动脚本先刷新整条流水线，再启动网站",
     },
@@ -1091,8 +1759,8 @@ function renderOpsRibbon() {
   const updatedAt = formatDateTime(dashboard.optimization?.generated_at || dashboard.weather?.generated_at);
   const items = [
     {
-      label: "Heat Window",
-      title: derived.analysisProfileType === "historical_heatwave_case" ? "实时监测 / 默认推演" : "未来 24h 峰值",
+      label: "预报峰值",
+      title: "未来24小时最高温",
       value:
         derived.forecast?.next_24h_max_temperature !== null &&
         derived.forecast?.next_24h_max_temperature !== undefined
@@ -1100,12 +1768,15 @@ function renderOpsRibbon() {
           : "--",
       meta:
         derived.analysisProfileType === "historical_heatwave_case"
-          ? `真实日期 ${derived.liveDateLabel}，当前温度 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃；默认风险推演采用 ${derived.historicalWindow} 的真实热浪案例。`
-          : `当前 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃，风险推演直接使用未来72小时预报。`,
+          ? `当前温度 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃；${formatDecimal(
+              derived.forecast?.next_24h_max_temperature,
+              1
+            )}℃ 是未来24小时预报峰值。默认风险推演采用 ${derived.historicalWindow} 的真实热浪案例。`
+          : `当前温度 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃；该值是未来24小时预报峰值，风险推演直接使用未来72小时预报。`,
       tone: "warm",
     },
     {
-      label: "Priority District",
+      label: "重点城区",
       title: derived.topDistrict.district || "待识别",
       value:
         derived.topDistrict.average_risk !== null && derived.topDistrict.average_risk !== undefined
@@ -1115,7 +1786,7 @@ function renderOpsRibbon() {
       tone: "danger",
     },
     {
-      label: "Coverage Action",
+      label: "覆盖动作",
       title: scenario ? `新增 ${scenario.new_site_count} 点方案` : "待返回优化方案",
       value: scenario ? `${formatNumber(scenario.metrics.coverage_improvement_population || 0)} 人` : "--",
       meta: scenario
@@ -1124,7 +1795,7 @@ function renderOpsRibbon() {
       tone: "teal",
     },
     {
-      label: "Time Gain",
+      label: "时间收益",
       title: "平均到达压缩",
       value: timeSaved ? formatMinutes(timeSaved) : "--",
       meta: updatedAt === "--" ? "相对基线测算时间收益。" : `最新重算时间 ${updatedAt}`,
@@ -1251,7 +1922,7 @@ function renderAuthenticityCards(containerId, items) {
 
     const meta = document.createElement("small");
     meta.textContent =
-      `${humanizeAuditStage(item.stage)} · ${item.authenticity_label || "--"} · ` +
+      `${humanizeAuditStage(item.stage)} · ${humanizeAuthenticityLabel(item.authenticity_label)} · ` +
       `${humanizeAuditLevel(item.current_data_level)}${item.checked_at ? ` · ${formatDateTime(item.checked_at)}` : ""}`;
 
     copy.append(title, meta);
@@ -1310,15 +1981,418 @@ function renderReferenceLinks(containerId, items) {
   renderMetricRows(containerId, items, "暂无外部参考链接");
 }
 
-function updateCommandNav(activeId) {
-  document.body.dataset.activeSection = activeId || "section-overview";
+function applyCommandNavState(activeId) {
+  const resolvedActiveId = activeId || "section-overview";
+  const previousActiveId = document.body.dataset.activeSection || "section-overview";
+  document.body.dataset.activeSection = resolvedActiveId;
   document.querySelectorAll(".command-link[data-section-target]").forEach((link) => {
-    const isActive = link.dataset.sectionTarget === activeId;
+    const isActive = link.dataset.sectionTarget === resolvedActiveId;
     link.classList.toggle("is-active", isActive);
     link.setAttribute("aria-current", isActive ? "page" : "false");
   });
-  updateSectionHud(activeId);
+  const main = byId("main-content");
+  main?.querySelectorAll("[data-page-owner]").forEach((section) => {
+    const isActive = section.dataset.pageOwner === resolvedActiveId;
+    section.classList.toggle("is-page-active", isActive);
+    section.setAttribute("aria-hidden", isActive ? "false" : "true");
+  });
+  if (main) {
+    main.dataset.currentPage = resolvedActiveId;
+  }
+  if (previousActiveId !== resolvedActiveId || window.location.hash === `#${resolvedActiveId}`) {
+    window.scrollTo(0, 0);
+  }
+  updateSectionHud(resolvedActiveId);
   syncCommandIndicator();
+  window.HeatGuardianExtras?.sectionChanged?.(resolvedActiveId);
+
+  const refreshVisibleViewport = () => {
+    if (spatialRuntime.map) {
+      spatialRuntime.map.invalidateSize({ pan: false });
+      if (resolvedActiveId === "section-spatial" && !spatialRuntime.visibleFitDone && appState.dashboard) {
+        spatialRuntime.visibleFitDone = true;
+        spatialRuntime.autoFitKey = null;
+        renderSpatialBoard();
+      }
+    }
+    chartRegistry.forEach((chart) => chart.resize());
+  };
+
+  refreshVisibleViewport();
+  window.requestAnimationFrame(refreshVisibleViewport);
+  window.setTimeout(refreshVisibleViewport, 48);
+  window.setTimeout(refreshVisibleViewport, 140);
+}
+
+function getNavSectionIndex(sectionId) {
+  const order = getCommandSectionOrder();
+  const index = order.indexOf(sectionId);
+  return index === -1 ? 0 : index;
+}
+
+function getCommandSectionOrder() {
+  const dynamicOrder = Array.from(document.querySelectorAll(".command-link[data-section-target]"))
+    .map((link) => link.dataset.sectionTarget)
+    .filter(Boolean);
+  return dynamicOrder.length ? dynamicOrder : NAV_SECTION_ORDER;
+}
+
+function getCommandSectionLabel(sectionId) {
+  const section = sectionId ? byId(sectionId) : null;
+  const link = Array.from(document.querySelectorAll(".command-link[data-section-target]")).find(
+    (item) => item.dataset.sectionTarget === sectionId
+  );
+  const chapter = section?.dataset.chapter || "";
+  const linkText = link?.textContent?.trim() || sectionId || "页面";
+  const sectionTitle = section
+    ?.querySelector("h1, h2, .panel-title, .track-title, .spotlight-title")
+    ?.textContent?.trim();
+
+  if (chapter && sectionTitle && sectionTitle !== linkText) {
+    return `${chapter} · ${sectionTitle}`;
+  }
+
+  return chapter || linkText;
+}
+
+function getSectionTransitionDirection(targetId) {
+  const currentId = document.body.dataset.activeSection || "section-overview";
+  const currentIndex = getNavSectionIndex(currentId);
+  const targetIndex = getNavSectionIndex(targetId);
+  return targetIndex >= currentIndex ? "forward" : "back";
+}
+
+function canAnimateSectionTransition(targetId) {
+  return (
+    targetId &&
+    document.body.dataset.activeSection !== targetId &&
+    !prefersReducedMotion()
+  );
+}
+
+function ensureSectionTransitionLayer() {
+  let layer = document.querySelector(".section-transition-layer");
+  if (layer) return layer;
+
+  layer = document.createElement("div");
+  layer.className = "section-transition-layer";
+  layer.setAttribute("aria-hidden", "true");
+  layer.innerHTML = `
+    <span class="section-transition-grid"></span>
+    <svg class="section-transition-mask" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <path class="section-heat-wave section-heat-wave-a" d="M-18,0 C8,12 11,35 31,42 C52,50 44,76 72,86 C86,91 95,96 118,100 L118,0 Z"></path>
+      <path class="section-heat-wave section-heat-wave-b" d="M-28,0 C-2,16 18,24 24,42 C33,68 58,59 70,80 C79,94 98,94 126,100 L126,0 Z"></path>
+    </svg>
+    <span class="section-transition-route section-transition-route-a"></span>
+    <span class="section-transition-route section-transition-route-b"></span>
+    <span class="section-transition-route section-transition-route-c"></span>
+    <span class="section-transition-ping section-transition-ping-a"></span>
+    <span class="section-transition-ping section-transition-ping-b"></span>
+    <span class="section-transition-ping section-transition-ping-c"></span>
+    <span class="section-transition-ping section-transition-ping-d"></span>
+    <div class="section-transition-page-deck">
+      <div class="section-transition-page-snapshot"></div>
+    </div>
+    <span class="section-transition-rail section-transition-rail-top"></span>
+    <span class="section-transition-rail section-transition-rail-bottom"></span>
+    <span class="section-transition-sweep"></span>
+    <span class="section-transition-signal"></span>
+    <span class="section-transition-word"></span>
+    <span class="section-transition-code"></span>
+    <div class="section-transition-card">
+      <span>切换至</span>
+      <strong></strong>
+    </div>
+  `;
+  document.body.appendChild(layer);
+  return layer;
+}
+
+function finishSectionTransition() {
+  const layer = document.querySelector(".section-transition-layer");
+  if (!layer) return;
+
+  if (sectionTransitionTimer) {
+    window.clearTimeout(sectionTransitionTimer);
+    sectionTransitionTimer = null;
+  }
+
+  layer.classList.remove("is-active", "is-forward", "is-back", "is-deck");
+  document.body.classList.remove("is-section-transitioning", "is-section-deck-transitioning");
+  delete document.documentElement.dataset.sectionTransitionDirection;
+  window.HeatGuardianMotion?.finishSectionTransition?.(layer);
+  window.setTimeout(() => {
+    window.HeatGuardianMotion?.finishSectionTransition?.(layer);
+  }, 32);
+}
+
+function playSectionTransition(direction, targetId, style = "handoff") {
+  const layer = ensureSectionTransitionLayer();
+  const label = layer.querySelector(".section-transition-card strong");
+  const labelTag = layer.querySelector(".section-transition-card span");
+  const word = layer.querySelector(".section-transition-word");
+  const code = layer.querySelector(".section-transition-code");
+  const chapter = byId(targetId)?.dataset.chapter || "HEAT";
+  if (label) {
+    label.textContent = getCommandSectionLabel(targetId);
+  }
+  if (labelTag) {
+    labelTag.textContent = style === "deck" ? "3D SCROLL DECK" : "MISSION HANDOFF";
+  }
+  if (word) {
+    word.textContent = chapter.replace(" / ", " · ");
+  }
+  if (code) {
+    code.textContent = `WUHAN GRID / ${targetId.replace("section-", "").toUpperCase()} / LIVE`;
+  }
+
+  if (sectionTransitionTimer) {
+    window.clearTimeout(sectionTransitionTimer);
+    sectionTransitionTimer = null;
+  }
+
+  document.documentElement.dataset.sectionTransitionDirection = direction;
+  document.body.classList.add("is-section-transitioning");
+  document.body.classList.toggle("is-section-deck-transitioning", style === "deck");
+  layer.classList.remove("is-active", "is-forward", "is-back", "is-deck");
+  layer.classList.toggle("is-deck", style === "deck");
+  const gsapTransitionDuration = window.HeatGuardianMotion?.playSectionTransition?.({
+    layer,
+    direction,
+    targetId,
+    duration: style === "deck" ? SECTION_DECK_TRANSITION_DURATION_MS : SECTION_TRANSITION_DURATION_MS,
+    style,
+  });
+  if (!gsapTransitionDuration) {
+    void layer.offsetWidth;
+    layer.classList.add("is-active", direction === "back" ? "is-back" : "is-forward");
+    if (style === "deck") layer.classList.add("is-deck");
+  }
+  sectionTransitionTimer = window.setTimeout(() => {
+    sectionTransitionTimer = null;
+    finishSectionTransition();
+  }, gsapTransitionDuration || (style === "deck" ? SECTION_DECK_TRANSITION_DURATION_MS : SECTION_TRANSITION_DURATION_MS));
+}
+
+function markSectionArriving(activeId) {
+  if (prefersReducedMotion()) return;
+  if (window.HeatGuardianMotion?.enterSection?.(activeId)) return;
+  const main = byId("main-content");
+  if (!main) return;
+
+  const sections = Array.from(main.querySelectorAll(`[data-page-owner="${activeId}"]`));
+  sections.forEach((section, index) => {
+    section.classList.remove("is-section-arriving");
+    section.style.setProperty("--section-arrive-index", String(Math.min(index, 3)));
+    void section.offsetWidth;
+    section.classList.add("is-section-arriving");
+    window.setTimeout(() => {
+      section.classList.remove("is-section-arriving");
+      section.style.removeProperty("--section-arrive-index");
+    }, 340);
+  });
+}
+
+function getAdjacentCommandSection(delta) {
+  const order = getCommandSectionOrder();
+  const currentId = document.body.dataset.activeSection || "section-overview";
+  const currentIndex = Math.max(order.indexOf(currentId), 0);
+  const targetIndex = clampValue(currentIndex + delta, 0, order.length - 1);
+  return order[targetIndex] === currentId ? null : order[targetIndex];
+}
+
+function getActivePageElements(sectionId = document.body.dataset.activeSection || "section-overview") {
+  const main = byId("main-content");
+  return Array.from(main?.querySelectorAll(`[data-page-owner="${sectionId}"].is-page-active`) || []);
+}
+
+function getActivePageBounds(sectionId = document.body.dataset.activeSection || "section-overview") {
+  const elements = getActivePageElements(sectionId);
+  if (!elements.length) return null;
+
+  let top = Infinity;
+  let bottom = -Infinity;
+  elements.forEach((element) => {
+    const rect = element.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return;
+    top = Math.min(top, rect.top);
+    bottom = Math.max(bottom, rect.bottom);
+  });
+
+  return Number.isFinite(top) && Number.isFinite(bottom) ? { top, bottom } : null;
+}
+
+function getNavOffset() {
+  const navShell = document.querySelector(".command-nav-shell");
+  const rect = navShell?.getBoundingClientRect();
+  return rect ? rect.bottom : 0;
+}
+
+function getPageEdgeDirection(deltaY) {
+  const bounds = getActivePageBounds();
+  if (!bounds) return 0;
+  if (deltaY > 0 && bounds.bottom <= window.innerHeight + SECTION_PAGE_EDGE_TOLERANCE) return 1;
+  if (deltaY < 0 && bounds.top >= getNavOffset() - SECTION_PAGE_EDGE_TOLERANCE) return -1;
+  return 0;
+}
+
+function navigateToCommandSection(targetId, options = {}) {
+  if (!targetId || !byId(targetId)) return false;
+  if (!updateCommandNav(targetId, options)) return false;
+  history.replaceState(null, "", `#${targetId}`);
+  return true;
+}
+
+function isSectionNavigationInputTarget(target) {
+  return Boolean(
+    target?.closest(
+      "a, button, input, textarea, select, [contenteditable='true'], [role='button'], .leaflet-container, .chart, .table-wrap, .command-nav"
+    )
+  );
+}
+
+function bindSectionNavigationInput() {
+  if (sectionInputBound) return;
+  const nav = byId("command-nav");
+  if (!nav) return;
+
+  document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.repeat || isSectionNavigationInputTarget(event.target)) return;
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+
+    const targetId = getAdjacentCommandSection(event.key === "ArrowRight" ? 1 : -1);
+    if (!targetId) return;
+
+    event.preventDefault();
+    navigateToCommandSection(targetId);
+  });
+
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+      if (isSectionNavigationInputTarget(event.target)) return;
+      sectionTouchStart = {
+        x: event.clientX,
+        y: event.clientY,
+        time: performance.now(),
+      };
+      sectionTouchEdgeReady = getPageEdgeDirection(1) === 1 || getPageEdgeDirection(-1) === -1;
+    },
+    { passive: true }
+  );
+
+  document.addEventListener(
+    "pointerup",
+    (event) => {
+      if (!sectionTouchStart) return;
+      const deltaX = event.clientX - sectionTouchStart.x;
+      const deltaY = event.clientY - sectionTouchStart.y;
+      const elapsed = performance.now() - sectionTouchStart.time;
+      sectionTouchStart = null;
+
+      if (elapsed > 820) return;
+      if (Math.abs(deltaX) >= SECTION_SWIPE_TOUCH_THRESHOLD && Math.abs(deltaX) >= Math.abs(deltaY) * 1.35) {
+        const targetId = getAdjacentCommandSection(deltaX < 0 ? 1 : -1);
+        if (targetId) {
+          navigateToCommandSection(targetId);
+        }
+        return;
+      }
+
+      if (!sectionTouchEdgeReady) return;
+      if (Math.abs(deltaY) < SECTION_SWIPE_TOUCH_THRESHOLD || Math.abs(deltaY) < Math.abs(deltaX) * 1.25) return;
+
+      const edgeDirection = getPageEdgeDirection(-deltaY);
+      if (!edgeDirection) return;
+      const targetId = getAdjacentCommandSection(edgeDirection);
+      if (targetId) {
+        navigateToCommandSection(targetId, { transitionStyle: "deck" });
+      }
+    },
+    { passive: true }
+  );
+
+  document.addEventListener("pointercancel", () => {
+    sectionTouchStart = null;
+    sectionTouchEdgeReady = false;
+  });
+
+  document.addEventListener(
+    "wheel",
+    (event) => {
+      if (event.defaultPrevented || prefersReducedMotion()) return;
+      if (isSectionNavigationInputTarget(event.target)) return;
+      if (Math.abs(event.deltaY) < Math.abs(event.deltaX) * 1.18) return;
+
+      const now = performance.now();
+      if (now < sectionWheelLockedUntil || document.body.classList.contains("is-section-transitioning")) {
+        event.preventDefault();
+        return;
+      }
+
+      const edgeDirection = getPageEdgeDirection(event.deltaY);
+      if (!edgeDirection) {
+        sectionWheelAccumulator = 0;
+        return;
+      }
+
+      sectionWheelAccumulator += event.deltaY;
+      if (Math.abs(sectionWheelAccumulator) < SECTION_WHEEL_THRESHOLD) return;
+
+      const targetId = getAdjacentCommandSection(edgeDirection);
+      sectionWheelAccumulator = 0;
+      if (!targetId) return;
+
+      event.preventDefault();
+      sectionWheelLockedUntil = now + SECTION_WHEEL_LOCK_MS;
+      navigateToCommandSection(targetId, { transitionStyle: "deck" });
+    },
+    { passive: false }
+  );
+
+  sectionInputBound = true;
+}
+
+function updateCommandNav(activeId, options = {}) {
+  const resolvedActiveId = activeId || "section-overview";
+
+  if (options.animate === false || !canAnimateSectionTransition(resolvedActiveId)) {
+    applyCommandNavState(resolvedActiveId);
+    return true;
+  }
+
+  if (document.body.classList.contains("is-section-transitioning")) {
+    finishSectionTransition();
+  }
+
+  const direction = getSectionTransitionDirection(resolvedActiveId);
+  const applyState = () => {
+    applyCommandNavState(resolvedActiveId);
+    markSectionArriving(resolvedActiveId);
+    window.setTimeout(() => pulseDecisionSignals(), 56);
+  };
+
+  if (options.transitionStyle === "deck") {
+    playSectionTransition(direction, resolvedActiveId, "deck");
+    window.setTimeout(applyState, Math.round(SECTION_DECK_TRANSITION_DURATION_MS * 0.46));
+    return true;
+  }
+
+  playSectionTransition(direction, resolvedActiveId, "handoff");
+  window.setTimeout(applyState, Math.round(SECTION_TRANSITION_DURATION_MS * 0.4));
+
+  return true;
+}
+
+function assignPageOwners() {
+  let currentOwner = "section-overview";
+  document.querySelectorAll("main .observe-section").forEach((section) => {
+    if (section.hasAttribute("data-nav-section") && section.id) {
+      currentOwner = section.id;
+    }
+    section.dataset.pageOwner = currentOwner;
+  });
 }
 
 function ensureCommandIndicator() {
@@ -1381,11 +2455,11 @@ function bindCommandNav() {
   links.forEach((link) => {
     link.addEventListener("click", (event) => {
       const targetId = link.dataset.sectionTarget;
-      const target = byId(targetId);
-      if (!target) return;
+      if (!targetId) return;
       event.preventDefault();
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-      updateCommandNav(targetId);
+      if (updateCommandNav(targetId)) {
+        history.replaceState(null, "", `#${targetId}`);
+      }
     });
 
     link.addEventListener("mouseenter", () => {
@@ -1402,6 +2476,7 @@ function bindCommandNav() {
     syncCommandIndicator();
   });
 
+  bindSectionNavigationInput();
   commandNavBound = true;
 }
 
@@ -1412,37 +2487,17 @@ function setupSectionObservers() {
     return;
   }
 
-  updateCommandNav("section-overview");
+  assignPageOwners();
+  const initialHash = window.location.hash.replace("#", "");
+  const initialTarget = byId(initialHash);
+  const initialSection = initialTarget?.hasAttribute("data-nav-section") ? initialHash : "section-overview";
+  updateCommandNav(initialSection, { animate: false });
 
   sections.forEach((section, index) => {
     window.setTimeout(() => {
       section.classList.add("is-visible");
     }, 40 + index * 55);
   });
-
-  if (typeof IntersectionObserver === "undefined") {
-    sections.forEach((section) => section.classList.add("is-visible"));
-    return;
-  }
-
-  const navSections = document.querySelectorAll("[data-nav-section]");
-  if (navSections.length) {
-    const navObserver = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
-        if (visible?.target?.id) {
-          updateCommandNav(visible.target.id);
-        }
-      },
-      {
-        threshold: [0.2, 0.45, 0.7],
-        rootMargin: "-18% 0px -52% 0px",
-      }
-    );
-    navSections.forEach((section) => navObserver.observe(section));
-  }
 
   sectionObserverBound = true;
 }
@@ -1455,47 +2510,18 @@ function setupInteractiveChrome() {
 
   bindScrollProgress();
   setupHeroAtmosphere();
+  setupKineticPresentation();
 
   document
     .querySelectorAll(
       ".hero-stage, .hero-aside, .workflow-step, .panel, .card, .spotlight-card, .site-card, .ops-item, .summary-pill, .aside-kpi, .briefing-card, .focus-card, .mini-panel, .action-card, .metric-row, .spotlight-metric, .site-stat, .spatial-stage, .source-card"
     )
     .forEach((surface) => {
-      if (!surface.classList.contains("has-surface-glow")) {
-        surface.classList.add("has-surface-glow");
-      }
-
-      let glow = surface.querySelector(".surface-glow");
-      if (!glow) {
-        glow = document.createElement("span");
-        glow.className = "surface-glow";
-        surface.appendChild(glow);
-      }
-
-      let frame = surface.querySelector(".surface-frame");
-      if (!frame) {
-        frame = document.createElement("span");
-        frame.className = "surface-frame";
-        surface.appendChild(frame);
-      }
-
-      if (surface.dataset.surfaceBound === "true") return;
-
-      surface.addEventListener("pointerenter", () => {
-        surface.classList.add("is-surface-active");
-      });
-
-      surface.addEventListener("pointermove", (event) => {
-        const rect = surface.getBoundingClientRect();
-        surface.style.setProperty("--spot-x", `${event.clientX - rect.left}px`);
-        surface.style.setProperty("--spot-y", `${event.clientY - rect.top}px`);
-      });
-
-      surface.addEventListener("pointerleave", () => {
-        surface.classList.remove("is-surface-active");
-      });
-
-      surface.dataset.surfaceBound = "true";
+      surface.classList.remove("has-surface-glow", "is-surface-active");
+      surface.style.removeProperty("--spot-x");
+      surface.style.removeProperty("--spot-y");
+      surface.querySelectorAll(".surface-glow, .surface-frame").forEach((node) => node.remove());
+      surface.dataset.surfaceBound = "disabled";
     });
 
   syncCommandIndicator();
@@ -1529,13 +2555,20 @@ function renderSiteCards(containerId, items) {
     copy.className = "site-copy";
 
     const name = document.createElement("strong");
-    name.textContent = normalizePoiName(item.name, normalizePoiCategory(item), index);
+    name.textContent = getPoiDisplayName(item, index);
 
     const meta = document.createElement("small");
+    const sourceDetail = getPoiSourceDetail(item);
     meta.textContent =
       `${normalizePoiCategory(item)} · ${item.district || "未标注城区"} · ${formatCoord(item.lat, item.lon)}`;
 
     copy.append(name, meta);
+    if (sourceDetail) {
+      const source = document.createElement("small");
+      source.className = "site-source-note";
+      source.textContent = sourceDetail;
+      copy.appendChild(source);
+    }
     nameCell.append(rank, copy);
 
     const tag = document.createElement("span");
@@ -1630,7 +2663,7 @@ function buildDerivedState() {
   const officialCooling = dashboard.official_cooling || {};
   const officialSites = (officialCooling.sites || []).map((item, index) => ({
     ...item,
-    displayName: item.display_name || normalizePoiName(item.name, normalizePoiCategory(item), index),
+    displayName: getPoiDisplayName(item, index),
     displayCategory: normalizePoiCategory(item),
   }));
   const officialBulletins = officialCooling.bulletins || [];
@@ -1650,7 +2683,7 @@ function buildDerivedState() {
   const firstFeature = (grid.features || [])[0] || {};
   const selectedSites = (selectedScenario?.selected_sites || []).map((item, index) => ({
     ...item,
-    displayName: item.display_name || normalizePoiName(item.name, normalizePoiCategory(item), index),
+    displayName: getPoiDisplayName(item, index),
     displayCategory: normalizePoiCategory(item),
   }));
   const topCells = getTopRiskCells(grid.features || []);
@@ -1848,9 +2881,22 @@ function syncMapFocus(derived) {
   return { type: "empty", data: null };
 }
 
+function pulseSpatialFocus() {
+  if (prefersReducedMotion()) return;
+  const stage = document.querySelector(".spatial-stage");
+  if (!stage) return;
+  const burst = document.createElement("span");
+  burst.className = "spatial-focus-burst";
+  burst.setAttribute("aria-hidden", "true");
+  stage.appendChild(burst);
+  window.setTimeout(() => burst.remove(), 680);
+}
+
 function setMapFocus(type, id) {
   appState.mapFocus = { type, id };
   renderSpatialBoard();
+  pulseSpatialFocus();
+  window.setTimeout(() => pulseDecisionSignals(byId("section-spatial") || document), 90);
 }
 
 function renderPriorityList(containerId, items, type, activeId) {
@@ -1954,10 +3000,12 @@ function renderMapFocusPanel(derived, focus) {
     badge.textContent = site.covered_elderly_population > 0 ? "覆盖优先" : "均时优化";
   }
   if (summary) {
+    const sourceDetail = getPoiSourceDetail(site);
     summary.textContent =
       `${site.displayCategory || normalizePoiCategory(site)}候选点位于 ${formatCoord(site.lat, site.lon)}，` +
       `当前方案下新增覆盖 ${formatNumber(site.covered_elderly_population)} 名高风险老年人口，` +
-      `并改善 ${formatNumber(site.improved_cells)} 个网格的到达时间。`;
+      `并改善 ${formatNumber(site.improved_cells)} 个网格的到达时间。` +
+      (sourceDetail ? ` ${sourceDetail}。` : "");
   }
 
   renderFocusMetrics("map-focus-metrics", [
@@ -1982,6 +3030,366 @@ function renderMapFocusPanel(derived, focus) {
       meta: `综合评分 ${formatNumber(Math.round(site.score || 0))}`,
     },
   ]);
+}
+
+function buildGridGeoJsonFromFeatures(features) {
+  return {
+    type: "FeatureCollection",
+    features: (features || [])
+      .filter((item) => Array.isArray(item.polygon) && item.polygon.length >= 4)
+      .map((item) => ({
+        type: "Feature",
+        geometry: {
+          type: "Polygon",
+          coordinates: [[...item.polygon.map((point) => [Number(point[0]), Number(point[1])])]],
+        },
+        properties: { ...item },
+      })),
+  };
+}
+
+function getSpatialGeoJson(derived) {
+  const geojson = appState.gridGeojson;
+  if (geojson?.features?.length) return geojson;
+  return buildGridGeoJsonFromFeatures(derived.grid?.features || []);
+}
+
+function buildRiskPopup(properties) {
+  return (
+    `<strong>${properties.district || "未知区"} · ${properties.id || "网格"}</strong><br />` +
+    `风险分数：${formatDecimal(properties.risk_score, 2)}<br />` +
+    `老年人口：${formatNumber(properties.estimated_elderly_population || 0)}<br />` +
+    `最近步行：${formatMinutes(properties.nearest_walk_minutes)}`
+  );
+}
+
+function buildSitePopup(site, metaLabel) {
+  const sourceDetail = getPoiSourceDetail(site);
+  return (
+    `<strong>${site.displayName || site.name || "点位"}</strong><br />` +
+    `${site.displayCategory || normalizePoiCategory(site)} · ${metaLabel}<br />` +
+    `坐标：${formatCoord(site.lat, site.lon)}<br />` +
+    `新增覆盖：${formatNumber(site.covered_elderly_population || 0)} 人` +
+    (sourceDetail ? `<br />来源说明：${sourceDetail}` : "")
+  );
+}
+
+function clearSpatialLayers(map) {
+  spatialRuntime.overlayLayers.forEach((layer) => {
+    if (map.hasLayer(layer)) {
+      map.removeLayer(layer);
+    }
+  });
+  spatialRuntime.overlayLayers = [];
+  if (spatialRuntime.layerControl) {
+    map.removeControl(spatialRuntime.layerControl);
+    spatialRuntime.layerControl = null;
+  }
+}
+
+function ensureSpatialMap(containerId, derived) {
+  if (!window.L) return null;
+  const container = byId(containerId);
+  if (!container) return null;
+
+  if (!spatialRuntime.map) {
+    const center = derived.dashboard?.study_area?.center || { lat: 30.5928, lon: 114.3055 };
+    spatialRuntime.map = window.L.map(container, {
+      zoomControl: true,
+      scrollWheelZoom: false,
+      preferCanvas: true,
+    }).setView([Number(center.lat), Number(center.lon)], 11);
+
+    const markTileLoaded = () => {
+      spatialRuntime.tileLoadCount += 1;
+      if (spatialRuntime.tileLoadCount > 1) {
+        container.classList.remove("is-tile-fallback");
+      }
+    };
+    const markTileError = () => {
+      spatialRuntime.tileErrorCount += 1;
+      if (spatialRuntime.tileLoadCount < 2) {
+        container.classList.add("is-tile-fallback");
+      }
+    };
+
+    const cartoLayer = window.L.tileLayer(
+      "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_labels_under/{z}/{x}/{y}{r}.png",
+      {
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        subdomains: "abcd",
+        maxZoom: 19,
+        detectRetina: true,
+        opacity: 0.9,
+      }
+    );
+    const osmLayer = window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: 19,
+      detectRetina: true,
+      opacity: 0.86,
+    });
+
+    [cartoLayer, osmLayer].forEach((layer) => {
+      layer.on("tileload", markTileLoaded);
+      layer.on("tileerror", markTileError);
+    });
+
+    spatialRuntime.baseLayers = {
+      "CARTO 城市底图": cartoLayer,
+      "OSM 底图": osmLayer,
+    };
+    spatialRuntime.baseLayer = cartoLayer;
+    spatialRuntime.baseLayer.addTo(spatialRuntime.map);
+  }
+
+  return spatialRuntime.map;
+}
+
+function riskLayerStyle(properties, focus) {
+  const isFocused = focus.type === "cell" && focus.data?.id === properties.id;
+  const isTop = properties.risk_score >= 75;
+  return {
+    color: isFocused ? "#0b2934" : isTop ? "#e57b53" : "rgba(12, 140, 125, 0.28)",
+    weight: isFocused ? 2.4 : isTop ? 1.45 : 0.55,
+    fillColor: getRiskColor(properties.risk_score || 0),
+    fillOpacity: isFocused ? 0.68 : isTop ? 0.38 : 0.24,
+    opacity: isFocused ? 0.98 : isTop ? 0.74 : 0.44,
+    className: `risk-cell${isTop ? " risk-cell-hot" : ""}${isFocused ? " risk-cell-focused" : ""}`,
+  };
+}
+
+function createSiteIcon(index, focused) {
+  return window.L.divIcon({
+    className: "site-marker-shell",
+    html: `<div class="leaflet-site-marker${focused ? " is-focused" : ""}"><span>★</span><small>${index + 1}</small></div>`,
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+    popupAnchor: [0, -12],
+  });
+}
+
+function getCellLatLng(cell) {
+  const centerLat = Number(cell?.center_lat);
+  const centerLon = Number(cell?.center_lon);
+  if (Number.isFinite(centerLat) && Number.isFinite(centerLon)) {
+    return [centerLat, centerLon];
+  }
+
+  if (!Array.isArray(cell?.polygon) || !cell.polygon.length) return null;
+  const points = cell.polygon
+    .map(([lon, lat]) => [Number(lat), Number(lon)])
+    .filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
+  if (!points.length) return null;
+
+  const sum = points.reduce(
+    (acc, [lat, lon]) => {
+      acc.lat += lat;
+      acc.lon += lon;
+      return acc;
+    },
+    { lat: 0, lon: 0 }
+  );
+  return [sum.lat / points.length, sum.lon / points.length];
+}
+
+function getFocusLatLng(focus) {
+  if (!focus?.data) return null;
+  if (focus.type === "site") {
+    const lat = Number(focus.data.lat);
+    const lon = Number(focus.data.lon);
+    return Number.isFinite(lat) && Number.isFinite(lon) ? [lat, lon] : null;
+  }
+  if (focus.type === "cell") {
+    return getCellLatLng(focus.data);
+  }
+  return null;
+}
+
+function getFocusKey(focus) {
+  if (!focus?.data) return "";
+  if (focus.type === "site") return `site:${focus.data.poi_id || focus.data.id || ""}`;
+  if (focus.type === "cell") return `cell:${focus.data.id || ""}`;
+  return "";
+}
+
+function renderCoverageFlowLayer(map, derived, focus) {
+  const flowLayer = window.L.layerGroup();
+  const topCells = (derived.topCells || []).slice(0, 4);
+  const selectedSites = (derived.selectedSites || []).slice(0, 5);
+  const maxPairs = Math.min(selectedSites.length, topCells.length, 4);
+
+  for (let index = 0; index < maxPairs; index += 1) {
+    const site = selectedSites[index];
+    const cell = topCells[index];
+    const siteLatLng = [Number(site.lat), Number(site.lon)];
+    const cellLatLng = getCellLatLng(cell);
+    if (
+      !cellLatLng ||
+      !Number.isFinite(siteLatLng[0]) ||
+      !Number.isFinite(siteLatLng[1])
+    ) {
+      continue;
+    }
+
+    const isFocused =
+      (focus.type === "site" && String(focus.data?.poi_id) === String(site.poi_id)) ||
+      (focus.type === "cell" && String(focus.data?.id) === String(cell.id));
+    const flowGap = 9 + ((index * 5) % 12);
+    const flowDash = 2 + (index % 3);
+    const flowDuration = (1.18 + index * 0.29 + Math.abs(Math.sin(index + 0.7)) * 0.26).toFixed(2);
+    const flowDelay = (-index * 0.31).toFixed(2);
+    const flow = window.L.polyline([siteLatLng, cellLatLng], {
+      color: isFocused ? "#0b8f82" : "#1f78d1",
+      weight: isFocused ? 3 : 2,
+      opacity: isFocused ? 0.82 : 0.48,
+      dashArray: `${flowDash} ${flowGap}`,
+      lineCap: "round",
+      interactive: false,
+      className: `leaflet-coverage-flow${isFocused ? " is-focused" : ""}`,
+    });
+    flow.on("add", () => {
+      const element = flow.getElement();
+      if (!element) return;
+      element.style.setProperty("--flow-duration", `${flowDuration}s`);
+      element.style.setProperty("--flow-delay", `${flowDelay}s`);
+      element.style.setProperty("--flow-offset", String(18 + index * 7));
+    });
+    flowLayer.addLayer(flow);
+
+    const pulse = window.L.circleMarker(cellLatLng, {
+      radius: isFocused ? 18 : 13,
+      color: isFocused ? "#0b8f82" : "#e57b53",
+      weight: 1,
+      fillColor: isFocused ? "#0c8c7d" : "#ff7e64",
+      fillOpacity: 0.04,
+      opacity: isFocused ? 0.82 : 0.42,
+      interactive: false,
+      className: `leaflet-coverage-pulse${isFocused ? " is-focused" : ""}`,
+    });
+    pulse.on("add", () => {
+      const element = pulse.getElement();
+      if (!element) return;
+      element.style.setProperty("--pulse-duration", `${(1.9 + index * 0.22).toFixed(2)}s`);
+      element.style.setProperty("--pulse-delay", `${(-index * 0.24).toFixed(2)}s`);
+    });
+    flowLayer.addLayer(pulse);
+  }
+
+  flowLayer.addTo(map);
+  spatialRuntime.overlayLayers.push(flowLayer);
+  return flowLayer;
+}
+
+function flySpatialMapToFocus(map, focus) {
+  const latLng = getFocusLatLng(focus);
+  const focusKey = getFocusKey(focus);
+  const spatialSection = byId("section-spatial");
+  if (!latLng || !focusKey || spatialRuntime.focusFlyKey === focusKey) return;
+  if (spatialSection && !spatialSection.classList.contains("is-page-active")) return;
+
+  spatialRuntime.focusFlyKey = focusKey;
+  const currentZoom = map.getZoom();
+  map.flyTo(latLng, Math.max(currentZoom || 11, 12), {
+    animate: !prefersReducedMotion(),
+    duration: 0.58,
+    easeLinearity: 0.28,
+  });
+}
+
+function renderSpatialMap(containerId, derived, focus) {
+  if (!window.L) {
+    renderSpatialSvg(containerId, derived, focus);
+    return;
+  }
+
+  const map = ensureSpatialMap(containerId, derived);
+  if (!map) return;
+  clearSpatialLayers(map);
+
+  const overlays = {};
+  const geojson = getSpatialGeoJson(derived);
+  const selectedSiteIds = derived.selectedSites.map((site) => site.poi_id).join(",");
+  const autoFitKey = `${derived.selectedScenarioCount || "none"}:${geojson.features?.length || 0}:${selectedSiteIds}`;
+
+  const riskLayer = window.L.geoJSON(geojson, {
+    style: (feature) => riskLayerStyle(feature.properties || {}, focus),
+    onEachFeature: (feature, layer) => {
+      const properties = feature.properties || {};
+      layer.bindPopup(buildRiskPopup(properties));
+      layer.on("click", () => setMapFocus("cell", properties.id));
+    },
+  });
+  overlays["风险网格"] = riskLayer;
+  riskLayer.addTo(map);
+  spatialRuntime.overlayLayers.push(riskLayer);
+
+  const flowLayer = renderCoverageFlowLayer(map, derived, focus);
+  overlays["覆盖流线"] = flowLayer;
+
+  const officialLayer = window.L.layerGroup();
+  derived.officialSites.forEach((site) => {
+    const marker = window.L.circleMarker([Number(site.lat), Number(site.lon)], {
+      radius: focus.type === "site" && String(focus.data?.poi_id) === String(site.poi_id) ? 8 : 6,
+      color: "#d9ecff",
+      weight: 1.5,
+      fillColor: "#4f9fff",
+      fillOpacity: 0.92,
+    });
+    marker.bindPopup(buildSitePopup(site, site.site_type_label || "官方纳凉点"));
+    officialLayer.addLayer(marker);
+  });
+  overlays["现有纳凉点"] = officialLayer;
+  officialLayer.addTo(map);
+  spatialRuntime.overlayLayers.push(officialLayer);
+
+  const scenarioLayer = window.L.layerGroup();
+  derived.selectedSites.forEach((site, index) => {
+    const focused = focus.type === "site" && String(focus.data?.poi_id) === String(site.poi_id);
+    const marker = window.L.marker([Number(site.lat), Number(site.lon)], {
+      icon: createSiteIcon(index, focused),
+      keyboard: true,
+    });
+    marker.bindPopup(buildSitePopup(site, "新增候选点"));
+    marker.on("click", () => setMapFocus("site", site.poi_id));
+    scenarioLayer.addLayer(marker);
+  });
+  overlays["推荐新增点"] = scenarioLayer;
+  scenarioLayer.addTo(map);
+  spatialRuntime.overlayLayers.push(scenarioLayer);
+
+  const isochroneRadiusMeters = (derived.dashboard?.recommendations?.cutoff_min || 15) * 75;
+  const isochroneLayer = window.L.layerGroup();
+  derived.selectedSites.forEach((site) => {
+    isochroneLayer.addLayer(
+      window.L.circle([Number(site.lat), Number(site.lon)], {
+        radius: isochroneRadiusMeters,
+        color: "#66d28f",
+        weight: 1.2,
+        dashArray: "6 6",
+        fillOpacity: 0.04,
+      })
+    );
+  });
+  overlays["15分钟等时圈"] = isochroneLayer;
+  isochroneLayer.addTo(map);
+  spatialRuntime.overlayLayers.push(isochroneLayer);
+
+  spatialRuntime.layerControl = window.L.control
+    .layers(spatialRuntime.baseLayers || { "OSM 底图": spatialRuntime.baseLayer }, overlays, { collapsed: false })
+    .addTo(map);
+
+  if (spatialRuntime.autoFitKey !== autoFitKey) {
+    spatialRuntime.autoFitKey = autoFitKey;
+    const bounds = riskLayer.getBounds && riskLayer.getBounds();
+    if (bounds?.isValid()) {
+      map.fitBounds(bounds, { padding: [24, 24], maxZoom: 12 });
+    }
+  }
+
+  flySpatialMapToFocus(map, focus);
+  window.setTimeout(() => map.invalidateSize(), 0);
 }
 
 function renderSpatialSvg(containerId, derived, focus) {
@@ -2160,7 +3568,7 @@ function renderSpatialBoard() {
     spatialChip.textContent = `新增 ${derived.selectedScenarioCount || "--"} 点 · 风险网格 + 候选点`;
   }
 
-  renderSpatialSvg("spatial-map", derived, focus);
+  renderSpatialMap("spatial-map", derived, focus);
   renderMapFocusPanel(derived, focus);
   renderPriorityList("priority-cell-list", derived.topCells, "cell", focus.type === "cell" ? focus.data?.id : null);
   renderPriorityList(
@@ -2169,6 +3577,17 @@ function renderSpatialBoard() {
     "site",
     focus.type === "site" ? focus.data?.poi_id : null
   );
+  [80, 520].forEach((delay) => {
+    window.setTimeout(() => {
+      window.HeatGuardianMotion?.refreshSpatialMotion?.({
+        map: spatialRuntime.map,
+        selectedSites: derived.selectedSites,
+        topCells: derived.topCells,
+        focus,
+      });
+    }, delay);
+  });
+  window.setTimeout(() => window.HeatGuardianExtras?.spatialReady?.(), 120);
 }
 
 function renderPoiList(categories) {
@@ -2210,7 +3629,7 @@ function renderRecommendations() {
     ? derived.selectedSites
     : (derived.dashboard.recommendations?.recommendations || []).map((item, index) => ({
         ...item,
-        displayName: normalizePoiName(item.name, normalizePoiCategory(item), index),
+        displayName: getPoiDisplayName(item, index),
         displayCategory: normalizePoiCategory(item),
       }));
 
@@ -2233,6 +3652,8 @@ function renderRecommendations() {
       const parts = [];
       if (item.district) parts.push(item.district);
       if (item.selection_reason) parts.push(item.selection_reason);
+      const sourceDetail = getPoiSourceDetail(item);
+      if (sourceDetail) parts.push(sourceDetail);
       sub.textContent = parts.join(" · ");
       nameTd.appendChild(sub);
     }
@@ -2285,6 +3706,7 @@ function renderSiteSpotlight() {
 
   const card = document.createElement("article");
   card.className = "spotlight-card";
+  const sourceDetail = getPoiSourceDetail(site);
   card.innerHTML = `
     <div>
       <p class="spotlight-kicker">Priority Deployment</p>
@@ -2293,6 +3715,7 @@ function renderSiteSpotlight() {
       <div class="spotlight-badges">
         <span class="spotlight-badge">${site.displayCategory || normalizePoiCategory(site)}</span>
         <span class="spotlight-badge">${site.selection_reason || (site.covered_elderly_population > 0 ? "覆盖优先" : "均时优化")}</span>
+        ${sourceDetail ? `<span class="spotlight-badge is-source">${sourceDetail}</span>` : ""}
         <span class="spotlight-badge">${scenario ? `新增 ${scenario.new_site_count} 点方案` : "推荐点位"}</span>
       </div>
     </div>
@@ -2607,8 +4030,8 @@ function renderEvidenceBoardLegacy() {
   const authenticityOverall = derived.authenticityOverall || {};
   const authenticitySummary = derived.authenticitySummary || {};
   const authenticityModules = derived.authenticityModules || [];
+  const populationDataLevel = derived.firstFeature.population_data_level || "demo_estimate";
   const worldpopAge65 = (worldpop.files || {}).age65 || {};
-  const geofabrikRemote = geofabrik.remote || {};
   const latestGeneratedAt =
     derived.dashboard.optimization?.generated_at ||
     derived.officialCooling?.generated_at ||
@@ -2616,7 +4039,7 @@ function renderEvidenceBoardLegacy() {
 
   if (chip) {
     chip.textContent =
-      `WorldPop ${worldpop.data_year || "--"} / ` +
+      `WorldPop ${getWorldPopVersionLabel(worldpop)} / ` +
       `Geofabrik ${humanizeSourceStatus(geofabrik.status)}`;
   }
   if (note) {
@@ -2627,13 +4050,13 @@ function renderEvidenceBoardLegacy() {
   renderFocusMetrics("evidence-kpis", [
     {
       label: "WorldPop 版本",
-      value: `${worldpop.data_year || "--"} / ${worldpop.release || "--"}`,
-      meta: `最近检查 ${formatDateTime(worldpop.checked_at)}`,
+      value: getWorldPopVersionLabel(worldpop),
+      meta: getWorldPopUsageMeta(worldpop, populationDataLevel),
     },
     {
       label: "Geofabrik 路网",
       value: humanizeSourceStatus(geofabrik.status),
-      meta: `远端文件时间 ${formatRemoteTimestamp(geofabrikRemote.last_modified)}`,
+      meta: getGeofabrikFreshnessMeta(geofabrik, "远端文件时间"),
     },
     {
       label: "官方页面监测",
@@ -2663,9 +4086,7 @@ function renderEvidenceBoardLegacy() {
       title: "WorldPop 老年人口栅格",
       status: humanizeSourceStatus(worldpop.status),
       meta: `最近检查 ${formatDateTime(worldpop.checked_at)}`,
-      detail:
-        `当前使用 CHN ${worldpop.data_year || "--"} ${worldpop.release || "--"}，` +
-        `1km constrained age-sex structures。`,
+      detail: getWorldPopSourceDetail(worldpop, populationDataLevel),
       href: (worldpopAge65.download || {}).url,
       linkLabel: "查看下载源",
       tone: "teal",
@@ -2673,7 +4094,7 @@ function renderEvidenceBoardLegacy() {
     {
       title: "Geofabrik 湖北路网",
       status: humanizeSourceStatus(geofabrik.status),
-      meta: `远端文件 ${formatRemoteTimestamp(geofabrikRemote.last_modified)}`,
+      meta: getGeofabrikFreshnessMeta(geofabrik, "远端文件"),
       detail: "步行网络优先基于 Geofabrik 湖北 OSM 路网构建，不以直线距离替代正式结论。",
       href: geofabrik.source_url,
       linkLabel: "查看下载源",
@@ -2756,15 +4177,15 @@ function renderEvidenceBoard() {
     authenticityOverall.recommended_short_answer ||
     authenticityOverall.verdict_label ||
     "真实公开数据 + 模型推导";
+  const populationDataLevel = derived.firstFeature.population_data_level || "demo_estimate";
   const worldpopAge65 = (worldpop.files || {}).age65 || {};
-  const geofabrikRemote = geofabrik.remote || {};
   const latestGeneratedAt =
     derived.dashboard.optimization?.generated_at ||
     derived.officialCooling?.generated_at ||
     derived.dashboard.weather?.generated_at;
 
   if (chip) {
-    chip.textContent = `${shortVerdict} · ${formatNumber(authenticitySummary.module_count || 0)} modules`;
+    chip.textContent = `${shortVerdict} · ${formatNumber(authenticitySummary.module_count || 0)} 个模块`;
   }
   if (note) {
     note.textContent = authenticityStatement;
@@ -2780,12 +4201,12 @@ function renderEvidenceBoard() {
         )} 个模块保留真实上游输入`,
     },
     {
-      label: "Fallback 模块",
+      label: "回退模块",
       value: `${formatNumber(authenticitySummary.fallback_count || 0)} 个`,
       meta: "0 表示当前未触发演示级回退数据",
     },
     {
-      label: "Proxy 模块",
+      label: "代理模块",
       value: `${formatNumber(authenticitySummary.proxy_count || 0)} 个`,
       meta: "局地热环境、容量、时段等变量含代理构造",
     },
@@ -2793,13 +4214,13 @@ function renderEvidenceBoard() {
       label: "官方核验点位",
       value: `${formatNumber(derived.officialVerifiedCount)} 个`,
       meta:
-        `live ${formatNumber(authenticitySummary.official_live_source_count || 0)} · ` +
-        `cached ${formatNumber(authenticitySummary.official_cached_source_count || 0)}`,
+        `实时源 ${formatNumber(authenticitySummary.official_live_source_count || 0)} · ` +
+        `缓存源 ${formatNumber(authenticitySummary.official_cached_source_count || 0)}`,
     },
     {
       label: "WorldPop 版本",
-      value: `${worldpop.data_year || "--"} / ${worldpop.release || "--"}`,
-      meta: `最近检查 ${formatDateTime(worldpop.checked_at)}`,
+      value: getWorldPopVersionLabel(worldpop),
+      meta: getWorldPopUsageMeta(worldpop, populationDataLevel),
     },
     {
       label: "本轮生成时间",
@@ -2825,7 +4246,7 @@ function renderEvidenceBoard() {
       title: "WorldPop 老年人口栅格",
       status: humanizeSourceStatus(worldpop.status),
       meta: `最近检查 ${formatDateTime(worldpop.checked_at)}`,
-      detail: `当前使用 CHN ${worldpop.data_year || "--"} ${worldpop.release || "--"} 的 1km 年龄结构栅格。`,
+      detail: getWorldPopSourceDetail(worldpop, populationDataLevel),
       href: (worldpopAge65.download || {}).url,
       linkLabel: "查看下载源",
       tone: "teal",
@@ -2833,7 +4254,7 @@ function renderEvidenceBoard() {
     {
       title: "Geofabrik 湖北步行路网",
       status: humanizeSourceStatus(geofabrik.status),
-      meta: `远端文件 ${formatRemoteTimestamp(geofabrikRemote.last_modified)}`,
+      meta: getGeofabrikFreshnessMeta(geofabrik, "远端文件"),
       detail: "可达性正式结果优先基于真实步行路网，不以直线距离代理替代主结果。",
       href: geofabrik.source_url,
       linkLabel: "查看下载源",
@@ -2858,7 +4279,7 @@ function renderEvidenceBoard() {
     if (freshnessGrid?.parentElement) {
       const divider = document.createElement("div");
       divider.className = "evidence-divider";
-      divider.textContent = "Data Authenticity Audit";
+      divider.textContent = "数据真实性审计";
 
       authenticityGrid = document.createElement("div");
       authenticityGrid.id = "authenticity-grid";
@@ -3017,6 +4438,7 @@ function renderScenarioChart() {
       },
     ],
   });
+  window.HeatGuardianExtras?.activeChart?.("scenario-chart", chart);
 }
 
 function renderRecommendationNote() {
@@ -3114,6 +4536,7 @@ function renderTrendChart(containerId, trend, options = {}) {
       },
     ],
   });
+  window.HeatGuardianExtras?.activeChart?.(containerId, chart);
 }
 
 function renderTrendComparison() {
@@ -3218,6 +4641,7 @@ function renderHeatmap(features) {
       },
     ],
   });
+  window.HeatGuardianExtras?.activeChart?.("heatmap-chart", chart);
 }
 
 function renderDistrictChart(districts) {
@@ -3286,6 +4710,7 @@ function renderDistrictChart(districts) {
       },
     ],
   });
+  window.HeatGuardianExtras?.activeChart?.("district-chart", chart);
 }
 
 function renderHeroSummary() {
@@ -3407,7 +4832,7 @@ function renderHeroSummary() {
   );
   setText(
     "dual-trend-kicker",
-    derived.analysisProfileType === "historical_heatwave_case" ? "Live vs Historical" : "Forecast vs Reference"
+    derived.analysisProfileType === "historical_heatwave_case" ? "实时预报 / 历史案例" : "预报 / 参考案例"
   );
   setText(
     "dual-trend-title",
@@ -3415,7 +4840,7 @@ function renderHeroSummary() {
   );
   setText(
     "dual-trend-chip",
-    derived.analysisProfileType === "historical_heatwave_case" ? "Forecast + Archive" : "Forecast First"
+    derived.analysisProfileType === "historical_heatwave_case" ? "预报 + 历史归档" : "预报优先"
   );
   setText(
     "dual-trend-note",
@@ -3428,13 +4853,13 @@ function renderHeroSummary() {
     "live-trend-detail",
     `${derived.forecastWindow} · 当前温度 ${formatDecimal(derived.forecast?.current_temperature, 1)}℃`
   );
-  setText("live-trend-chip", "Open-Meteo Forecast");
+  setText("live-trend-chip", "Open-Meteo 预报");
   setText("history-trend-title", historicalCaseLabel);
   setText(
     "history-trend-detail",
     `${historicalSeasonYear} 年窗口 ${historicalWindowLabel} · 历史热浪案例，不是当前实况`
   );
-  setText("history-trend-chip", "Open-Meteo Archive");
+  setText("history-trend-chip", "Open-Meteo 历史归档");
 
   const insightElement = byId("hero-insight");
   if (!insightElement) return;
@@ -3637,9 +5062,16 @@ function renderRoleSwitcher() {
     button.textContent = item.label;
     button.setAttribute("aria-pressed", appState.selectedRole === item.key ? "true" : "false");
     button.addEventListener("click", () => {
+      const flipState = window.HeatGuardianMotion?.captureState?.(
+        ".briefing-card, #role-metrics > *, #role-actions > *"
+      );
       appState.selectedRole = item.key;
       renderRoleSwitcher();
       renderRoleBriefing();
+      window.HeatGuardianMotion?.flipFrom?.(
+        flipState,
+        ".briefing-card, #role-metrics > *, #role-actions > *"
+      );
     });
     container.appendChild(button);
   });
@@ -3681,6 +5113,9 @@ function renderScenarioSwitcher() {
       scenario.new_site_count === derived.selectedScenarioCount ? "true" : "false"
     );
     button.addEventListener("click", () => {
+      const flipState = window.HeatGuardianMotion?.captureState?.(
+        ".scenario-focus, #scenario-focus-metrics > *, #scenario-site-list > *, #site-spotlight > *"
+      );
       appState.selectedScenarioCount = scenario.new_site_count;
       renderScenarioSwitcher();
       renderScenarioFocus();
@@ -3689,6 +5124,11 @@ function renderScenarioSwitcher() {
       renderRecommendationNote();
       renderScenarioChart();
       renderRoleBriefing();
+      window.HeatGuardianMotion?.flipFrom?.(
+        flipState,
+        ".scenario-focus, #scenario-focus-metrics > *, #scenario-site-list > *, #site-spotlight > *"
+      );
+      window.setTimeout(() => pulseDecisionSignals(), 80);
     });
     container.appendChild(button);
   });
@@ -3868,6 +5308,12 @@ function renderDashboard() {
     () => updateSectionHud(document.body.dataset.activeSection || "section-overview"),
     errors
   );
+  runRenderStep("gsap-motion", () => window.HeatGuardianMotion?.afterDashboardRender?.(), errors);
+  runRenderStep(
+    "motion-extras",
+    () => window.HeatGuardianExtras?.dashboardReady?.({ dashboard: appState.dashboard }),
+    errors
+  );
 
   return errors;
 }
@@ -3883,9 +5329,10 @@ async function bootstrapLegacy() {
   );
 
   try {
-    const [dashboardResult, gridResult] = await Promise.allSettled([
+    const [dashboardResult, gridResult, geojsonResult] = await Promise.allSettled([
       getJson("/api/dashboard"),
       getJson("/api/risk/grid"),
+      getJson("/api/risk/grid/geojson"),
     ]);
 
     if (dashboardResult.status !== "fulfilled") {
@@ -3894,6 +5341,8 @@ async function bootstrapLegacy() {
 
     appState.dashboard = dashboardResult.value;
     appState.grid = gridResult.status === "fulfilled" ? gridResult.value : { features: [] };
+    appState.gridGeojson =
+      geojsonResult.status === "fulfilled" ? geojsonResult.value : { type: "FeatureCollection", features: [] };
     appState.selectedScenarioCount = appState.selectedScenarioCount || getDefaultScenarioCount(appState.dashboard);
 
     const renderErrors = renderDashboard();
@@ -3957,9 +5406,10 @@ async function bootstrap() {
   );
 
   try {
-    const [dashboardResult, gridResult] = await Promise.allSettled([
+    const [dashboardResult, gridResult, geojsonResult] = await Promise.allSettled([
       getJson("/api/dashboard"),
       getJson("/api/risk/grid"),
+      getJson("/api/risk/grid/geojson"),
     ]);
 
     if (dashboardResult.status !== "fulfilled") {
@@ -3968,6 +5418,8 @@ async function bootstrap() {
 
     appState.dashboard = dashboardResult.value;
     appState.grid = gridResult.status === "fulfilled" ? gridResult.value : { features: [] };
+    appState.gridGeojson =
+      geojsonResult.status === "fulfilled" ? geojsonResult.value : { type: "FeatureCollection", features: [] };
     appState.selectedScenarioCount = appState.selectedScenarioCount || getDefaultScenarioCount(appState.dashboard);
 
     const renderErrors = renderDashboard();

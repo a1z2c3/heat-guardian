@@ -6,6 +6,13 @@ from common import PROCESSED_DIR, build_base_grid, current_timestamp, ensure_dir
 
 
 HIGH_RISK_THRESHOLD = 60
+WEIGHT_VARIANTS = [
+    ("current_weights", "当前方案 (0.45/0.40/0.15)", (0.45, 0.40, 0.15)),
+    ("heat_emphasis", "偏热暴露 (0.50/0.35/0.15)", (0.50, 0.35, 0.15)),
+    ("balanced_population", "偏人口暴露 (0.40/0.45/0.15)", (0.40, 0.45, 0.15)),
+    ("elderly_emphasis", "高龄优先 (0.35/0.50/0.15)", (0.35, 0.50, 0.15)),
+    ("access_emphasis", "偏可达性惩罚 (0.45/0.30/0.25)", (0.45, 0.30, 0.25)),
+]
 
 
 def weighted_average_minutes(features: list[dict]) -> float:
@@ -22,13 +29,11 @@ def weighted_average_minutes(features: list[dict]) -> float:
     return round(total_minutes / max(total_population, 1), 2)
 
 
-def build_risk_model_validation(risk_features: list[dict]) -> dict:
+def build_component_scores(risk_features: list[dict]) -> tuple[list[dict], int]:
     if not risk_features:
-        return {"top_cell_count": 0, "variants": []}
+        return [], 0
 
-    top_n = sum(1 for feature in risk_features if feature["risk_score"] >= HIGH_RISK_THRESHOLD)
-    top_n = max(top_n, 10)
-
+    top_n = max(sum(1 for feature in risk_features if feature["risk_score"] >= HIGH_RISK_THRESHOLD), 10)
     temp_values = [feature["temperature_estimate"] for feature in risk_features]
     apparent_values = [feature["apparent_temperature_estimate"] for feature in risk_features]
     elderly_values = [feature["estimated_elderly_population"] for feature in risk_features]
@@ -43,22 +48,47 @@ def build_risk_model_validation(risk_features: list[dict]) -> dict:
         apparent_norm = normalize(feature["apparent_temperature_estimate"], apparent_min, apparent_max)
         elderly_norm = normalize(feature["estimated_elderly_population"], elderly_min, elderly_max)
         access_penalty = 1 - feature.get("access_score", 0)
+        heat_proxy = apparent_norm * 0.7 + temp_norm * 0.3
         scored_features.append(
             {
                 **feature,
-                "temperature_only_score": round(temp_norm * 100, 2),
-                "temperature_humidity_score": round(apparent_norm * 100, 2),
-                "temperature_humidity_population_score": round((apparent_norm * 0.6 + elderly_norm * 0.4) * 100, 2),
-                "full_model_score": feature["risk_score"],
-                "access_penalty": round(access_penalty, 4),
+                "temp_norm": round(temp_norm, 6),
+                "apparent_norm": round(apparent_norm, 6),
+                "elderly_norm": round(elderly_norm, 6),
+                "access_penalty": round(access_penalty, 6),
+                "heat_proxy": round(heat_proxy, 6),
             }
         )
+    return scored_features, top_n
+
+
+def build_risk_model_validation(risk_features: list[dict]) -> dict:
+    if not risk_features:
+        return {"top_cell_count": 0, "variants": []}
+
+    scored_features, top_n = build_component_scores(risk_features)
+    for feature in scored_features:
+        feature_scores = {
+            "temperature_only_score": feature["temp_norm"] * 100,
+            "temperature_humidity_score": feature["apparent_norm"] * 100,
+            "temperature_humidity_population_score": (feature["apparent_norm"] * 0.6 + feature["elderly_norm"] * 0.4) * 100,
+            "full_model_score": feature["risk_score"],
+            "variant_w1_score": (feature["heat_proxy"] * 0.50 + feature["elderly_norm"] * 0.35 + feature["access_penalty"] * 0.15) * 100,
+            "variant_w2_score": (feature["heat_proxy"] * 0.40 + feature["elderly_norm"] * 0.45 + feature["access_penalty"] * 0.15) * 100,
+            "variant_w3_score": (feature["heat_proxy"] * 0.35 + feature["elderly_norm"] * 0.50 + feature["access_penalty"] * 0.15) * 100,
+            "variant_w4_score": (feature["heat_proxy"] * 0.45 + feature["elderly_norm"] * 0.30 + feature["access_penalty"] * 0.25) * 100,
+        }
+        feature.update({k: round(v, 2) for k, v in feature_scores.items()})
 
     variants = [
         ("temperature_only_score", "仅温度阈值"),
         ("temperature_humidity_score", "温度+体感温度"),
         ("temperature_humidity_population_score", "温度+体感温度+老年人口"),
-        ("full_model_score", "完整模型（加入可达性）"),
+        ("full_model_score", "完整模型（当前方案0.45/0.40/0.15）"),
+        ("variant_w1_score", "变体1 (0.50/0.35/0.15)"),
+        ("variant_w2_score", "变体2 (0.40/0.45/0.15)"),
+        ("variant_w3_score", "变体3 (0.35/0.50/0.15)"),
+        ("variant_w4_score", "变体4 (0.45/0.40/0.15简易)"),
     ]
 
     full_selected = sorted(scored_features, key=lambda item: item["full_model_score"], reverse=True)[:top_n]
@@ -93,6 +123,118 @@ def build_risk_model_validation(risk_features: list[dict]) -> dict:
     return {
         "top_cell_count": top_n,
         "variants": records,
+    }
+
+
+def merge_count(values: list[int]) -> tuple[list[int], int]:
+    if len(values) <= 1:
+        return values[:], 0
+    middle = len(values) // 2
+    left, left_inv = merge_count(values[:middle])
+    right, right_inv = merge_count(values[middle:])
+    merged: list[int] = []
+    inversions = left_inv + right_inv
+    i = 0
+    j = 0
+
+    while i < len(left) and j < len(right):
+        if left[i] <= right[j]:
+            merged.append(left[i])
+            i += 1
+        else:
+            merged.append(right[j])
+            j += 1
+            inversions += len(left) - i
+
+    merged.extend(left[i:])
+    merged.extend(right[j:])
+    return merged, inversions
+
+
+def kendall_tau(reference_ids: list[str], candidate_ids: list[str]) -> float:
+    if len(reference_ids) != len(candidate_ids):
+        return 0.0
+    size = len(reference_ids)
+    if size < 2:
+        return 1.0
+
+    candidate_rank = {identifier: index for index, identifier in enumerate(candidate_ids)}
+    permutation = [candidate_rank[identifier] for identifier in reference_ids if identifier in candidate_rank]
+    if len(permutation) != size:
+        return 0.0
+
+    _, inversions = merge_count(permutation)
+    total_pairs = size * (size - 1) / 2
+    return round(1 - (2 * inversions / total_pairs), 4)
+
+
+def summarize_weight_variant(scored_features: list[dict], score_key: str, label: str, top_n: int, baseline_ids: set[str]) -> dict:
+    selected = sorted(
+        scored_features,
+        key=lambda item: (-item[score_key], item["id"]),
+    )[:top_n]
+    selected_ids = {item["id"] for item in selected}
+    elderly_population_sum = sum(item["estimated_elderly_population"] for item in selected)
+    total_population = sum(item["estimated_elderly_population"] for item in scored_features)
+    district_counter = Counter(item["district"] for item in selected)
+    return {
+        "key": score_key,
+        "name": label,
+        "selected_cell_count": len(selected),
+        "elderly_population_sum": elderly_population_sum,
+        "elderly_capture_rate": round(elderly_population_sum / max(total_population, 1), 4),
+        "weighted_avg_walk_minutes": weighted_average_minutes(selected),
+        "overlap_with_baseline": len(selected_ids & baseline_ids),
+        "overlap_rate_with_baseline": round(len(selected_ids & baseline_ids) / max(top_n, 1), 4),
+        "top_district": district_counter.most_common(1)[0][0] if district_counter else "未知",
+        "top_cell_ids": [item["id"] for item in selected[: min(10, len(selected))]],
+    }
+
+
+def build_weight_sensitivity(risk_features: list[dict]) -> dict:
+    if not risk_features:
+        return {"top_cell_count": 0, "variants": [], "kendall_tau_matrix": []}
+
+    scored_features, top_n = build_component_scores(risk_features)
+    for feature in scored_features:
+        for key, _, (heat_weight, elderly_weight, access_weight) in WEIGHT_VARIANTS:
+            feature[key] = round(
+                (feature["heat_proxy"] * heat_weight + feature["elderly_norm"] * elderly_weight + feature["access_penalty"] * access_weight) * 100,
+                2,
+            )
+
+    ordered_rankings = {
+        key: [
+            item["id"]
+            for item in sorted(scored_features, key=lambda feature: (-feature[key], feature["id"]))
+        ]
+        for key, _, _ in WEIGHT_VARIANTS
+    }
+    baseline_key = WEIGHT_VARIANTS[0][0]
+    baseline_selected_ids = set(ordered_rankings[baseline_key][:top_n])
+
+    variants = []
+    for key, label, weights in WEIGHT_VARIANTS:
+        variant = summarize_weight_variant(scored_features, key, label, top_n, baseline_selected_ids)
+        variant["weights"] = {
+            "heat": weights[0],
+            "elderly": weights[1],
+            "access_penalty": weights[2],
+        }
+        variant["kendall_tau_with_baseline"] = kendall_tau(ordered_rankings[baseline_key], ordered_rankings[key])
+        variants.append(variant)
+
+    tau_matrix = []
+    for key_left, label_left, _ in WEIGHT_VARIANTS:
+        row = {"name": label_left, "key": key_left}
+        for key_right, _, _ in WEIGHT_VARIANTS:
+            row[key_right] = kendall_tau(ordered_rankings[key_left], ordered_rankings[key_right])
+        tau_matrix.append(row)
+
+    return {
+        "top_cell_count": top_n,
+        "variants": variants,
+        "kendall_tau_matrix": tau_matrix,
     }
 
 
@@ -228,6 +370,52 @@ def build_ablation_validation(
     return {"modules": modules}
 
 
+def build_strategy_comparison(optimization: dict) -> dict:
+    strategy_comparison = optimization.get("strategy_comparison", {})
+    if strategy_comparison:
+        return strategy_comparison
+    return {"strategies": []}
+
+
+def build_diurnal_risk_profile(weather_summary: dict) -> dict:
+    archive = weather_summary.get("historical_heatwave_case", {})
+    trend = archive.get("trend", [])
+    if not trend:
+        return {}
+
+    hourly_stats: dict[int, dict] = {}
+    for entry in trend:
+        time_str = entry.get("time")
+        if not time_str or "T" not in time_str:
+            continue
+        hour_str = time_str.split("T")[1].split(":")[0]
+        hour = int(hour_str)
+        if hour not in hourly_stats:
+            hourly_stats[hour] = {"temp_sum": 0.0, "apparent_sum": 0.0, "count": 0}
+
+        hourly_stats[hour]["temp_sum"] += entry.get("temperature", 0.0)
+        hourly_stats[hour]["apparent_sum"] += entry.get("apparent_temperature", 0.0)
+        hourly_stats[hour]["count"] += 1
+
+    profile = []
+    for hour in range(24):
+        if hour in hourly_stats and hourly_stats[hour]["count"] > 0:
+            count = hourly_stats[hour]["count"]
+            profile.append({
+                "hour": f"{hour:02d}:00",
+                "temperature": round(hourly_stats[hour]["temp_sum"] / count, 2),
+                "apparent_temperature": round(hourly_stats[hour]["apparent_sum"] / count, 2),
+            })
+
+    return {
+        "title": "热浪期间24小时风险节律",
+        "description": "基于历史热浪窗口的逐小时平均温度与体感温度变化曲线，突显了日间长时高风险（10:00-16:00）及夜间隐性高温特征。",
+        "profile": profile,
+        "daytime_high_risk_window": "10:00-16:00",
+        "nighttime_persistence_window": "20:00-06:00",
+    }
+
+
 def main() -> None:
     ensure_directories()
     config = load_config()
@@ -237,10 +425,13 @@ def main() -> None:
     poi_points = read_json(PROCESSED_DIR / "poi_points.json", [])
     optimization = read_json(PROCESSED_DIR / "optimization_experiments.json", {"scenarios": []})
 
+    weather_summary = read_json(PROCESSED_DIR / "weather_summary.json", {})
+
     risk_features = risk_grid.get("features", [])
     accessibility_features = accessibility_grid.get("features", [])
 
     risk_validation = build_risk_model_validation(risk_features)
+    weight_sensitivity = build_weight_sensitivity(risk_features)
     accessibility_comparison = build_accessibility_comparison(
         config,
         risk_features,
@@ -249,12 +440,17 @@ def main() -> None:
         poi_points,
     )
     ablation_validation = build_ablation_validation(risk_validation, accessibility_comparison, optimization)
+    strategy_comparison = build_strategy_comparison(optimization)
+    diurnal_risk_profile = build_diurnal_risk_profile(weather_summary)
 
     payload = {
         "generated_at": current_timestamp(),
         "risk_model_validation": risk_validation,
+        "weight_sensitivity": weight_sensitivity,
         "accessibility_algorithm_comparison": accessibility_comparison,
         "ablation_validation": ablation_validation,
+        "strategy_comparison": strategy_comparison,
+        "diurnal_risk_profile": diurnal_risk_profile,
     }
     write_json(PROCESSED_DIR / "competition_experiments.json", payload)
     print("比赛实验结果生成完成。")

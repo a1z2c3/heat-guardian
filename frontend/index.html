@@ -9,8 +9,20 @@
     />
     <meta name="theme-color" content="#071018" />
     <title>热龄卫士</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260424-ui-fix3" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="/static/styles.css?v=20260430-page-deck-fast1" />
+    <link rel="stylesheet" href="/static/light-fixes.css?v=20260430-page-deck-fast1" />
     <script src="/static/vendor/echarts.min.js?v=20260424-ui-fix3"></script>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
   </head>
   <body class="is-loading" data-visual-mode="command">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -18,8 +30,8 @@
       <span id="page-progress-bar" class="progress-bar"></span>
     </div>
     <div class="section-hud" aria-hidden="true">
-      <span class="section-hud-label">Current Chapter</span>
-      <strong id="section-hud-title">01 / OVERVIEW</strong>
+      <span class="section-hud-label">当前章节</span>
+      <strong id="section-hud-title">01 / 总览</strong>
       <small id="section-hud-detail">真实数据链路已接通</small>
     </div>
     <div class="page">
@@ -48,14 +60,6 @@
               <span class="status-chip" id="data-status">真实数据联动</span>
             </div>
             <h1>热龄卫士</h1>
-            <div class="visual-mode-bar" aria-label="视觉方案切换">
-              <div class="visual-mode-switch">
-                <button type="button" class="visual-mode-button is-active" data-visual-mode-button data-visual-mode="command" aria-pressed="true">指挥屏</button>
-                <button type="button" class="visual-mode-button" data-visual-mode-button data-visual-mode="signal" aria-pressed="false">信号流</button>
-                <button type="button" class="visual-mode-button" data-visual-mode-button data-visual-mode="atlas" aria-pressed="false">Atlas</button>
-              </div>
-              <a class="template-overview-link" href="/gallery">模板总览</a>
-            </div>
              <p class="subtitle">
                把老年热风险识别、真实步行可达性、避险资源盘点与临时纳凉点优化放到同一张决策界面，
                服务街道、社区与卫健部门在高温来临前完成提前部署。
@@ -64,7 +68,7 @@
              <div class="context-grid" aria-label="真实天气与历史推演双轨场景">
                <article class="track-card track-card-live">
                  <div class="track-head">
-                   <span class="context-label">Live Weather</span>
+                   <span class="context-label">实时天气</span>
                    <span id="live-track-chip" class="track-chip">--</span>
                  </div>
                  <strong id="live-track-title" class="track-title">--</strong>
@@ -86,7 +90,7 @@
                </article>
                <article class="track-card track-card-history">
                  <div class="track-head">
-                   <span class="context-label">Historical Case</span>
+                   <span class="context-label">历史热浪案例</span>
                    <span id="history-track-chip" class="track-chip">--</span>
                  </div>
                  <strong id="history-track-title" class="track-title">--</strong>
@@ -110,12 +114,12 @@
 
              <div class="context-bridge" aria-label="双轨解释与资源口径">
                <article class="bridge-card bridge-card-note">
-                 <span class="context-label">Reality vs Scenario</span>
+                 <span class="context-label">真实天气 / 推演场景</span>
                  <strong class="bridge-title">页面同时展示真实天气与默认风险推演</strong>
                  <p id="scenario-compare-note" class="bridge-detail">--</p>
                </article>
                <article class="bridge-card bridge-card-resource">
-                 <span class="context-label">Resource Scope</span>
+                 <span class="context-label">资源口径</span>
                  <strong id="resource-context-title" class="bridge-title">--</strong>
                  <p id="resource-context-detail" class="bridge-detail">--</p>
                </article>
@@ -124,10 +128,10 @@
              <div class="hero-stage">
               <div class="hero-stage-head">
                 <div>
-                  <p class="panel-kicker">District Pressure</p>
+                  <p class="panel-kicker">城区压力</p>
                   <div class="hero-stage-title">重点城区风险光谱</div>
                 </div>
-                <span class="panel-chip">Top 5 Districts</span>
+                <span class="panel-chip">前五城区</span>
               </div>
               <div id="hero-spectrum" class="hero-spectrum" aria-label="重点城区风险光谱"></div>
             </div>
@@ -231,7 +235,7 @@
         </section>
 
         <section class="signal-ticker-shell" aria-label="城区快讯">
-          <div class="signal-ticker-label">Live Feed</div>
+          <div class="signal-ticker-label">实时动态</div>
           <div id="signal-ticker" class="signal-ticker"></div>
         </section>
 
@@ -247,10 +251,10 @@
           </nav>
         </div>
 
-        <section class="workflow-shell observe-section" id="section-overview" data-nav-section data-chapter="01 / OVERVIEW">
+        <section class="workflow-shell observe-section" id="section-overview" data-nav-section data-chapter="01 / 总览">
           <div class="workflow-head">
             <div>
-              <p class="panel-kicker">Decision Chain</p>
+              <p class="panel-kicker">决策链路</p>
               <div class="panel-title">一屏看懂当前调度链路</div>
             </div>
             <span class="panel-chip">识别 → 诊断 → 仿真 → 落地</span>
@@ -261,7 +265,7 @@
         <section class="metrics-shell observe-section" aria-label="核心指标摘要">
           <div class="metrics-shell-head">
             <div>
-              <p class="panel-kicker">Command Snapshot</p>
+              <p class="panel-kicker">指挥快照</p>
               <div class="panel-title">当前热风险、覆盖缺口与策略收益</div>
             </div>
             <p class="metrics-shell-note">
@@ -323,11 +327,11 @@
           </div>
         </section>
 
-        <section class="grid ops-grid observe-section" id="section-ops" data-nav-section data-chapter="02 / OPS">
+        <section class="grid ops-grid observe-section" id="section-ops" data-nav-section data-chapter="02 / 调度">
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Role Briefing</p>
+                <p class="panel-kicker">角色简报</p>
                 <div class="panel-title">角色化行动看板</div>
               </div>
               <span id="role-chip" class="panel-chip">街道视角</span>
@@ -349,7 +353,7 @@
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Scenario Control</p>
+                <p class="panel-kicker">方案控制</p>
                 <div class="panel-title">方案切换与候选点明细</div>
               </div>
               <span id="scenario-chip" class="panel-chip">默认方案</span>
@@ -363,10 +367,10 @@
           </div>
         </section>
 
-        <section class="panel spatial-panel observe-section" id="section-spatial" data-nav-section data-chapter="03 / SPATIAL">
+        <section class="panel spatial-panel observe-section" id="section-spatial" data-nav-section data-chapter="03 / 空间">
           <div class="panel-head">
             <div>
-              <p class="panel-kicker">Spatial Board</p>
+              <p class="panel-kicker">空间态势</p>
               <div class="panel-title">真实空间态势图</div>
             </div>
             <span id="spatial-chip" class="panel-chip">风险网格 + 候选点</span>
@@ -411,7 +415,7 @@
               <div class="focus-card">
                 <div class="focus-head">
                   <div>
-                    <p class="panel-kicker">Spatial Focus</p>
+                    <p class="panel-kicker">空间焦点</p>
                     <h2 id="map-focus-title">--</h2>
                   </div>
                   <span id="map-focus-badge" class="briefing-badge">--</span>
@@ -434,14 +438,14 @@
           </div>
         </section>
 
-        <section class="grid two-cols observe-section" id="section-analysis" data-nav-section data-chapter="04 / ANALYSIS">
+        <section class="grid two-cols observe-section" id="section-analysis" data-nav-section data-chapter="04 / 分析">
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p id="dual-trend-kicker" class="panel-kicker">Weather Dual Track</p>
+                <p id="dual-trend-kicker" class="panel-kicker">天气双轨</p>
                 <div id="dual-trend-title" class="panel-title">真实预报 / 历史热浪对照</div>
               </div>
-              <span id="dual-trend-chip" class="panel-chip">Live + Archive</span>
+              <span id="dual-trend-chip" class="panel-chip">预报 + 历史</span>
             </div>
             <p id="dual-trend-note" class="panel-note">--</p>
             <div class="dual-trend-grid">
@@ -471,7 +475,7 @@
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Grid Risk</p>
+                <p class="panel-kicker">网格风险</p>
                 <div class="panel-title">街区风险热力矩阵</div>
               </div>
               <span class="panel-chip">10 × 14 网格</span>
@@ -484,7 +488,7 @@
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">District Scan</p>
+                <p class="panel-kicker">城区扫描</p>
                 <div class="panel-title">高风险城区排行</div>
               </div>
               <span class="panel-chip">街区对比</span>
@@ -495,7 +499,7 @@
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Resource Pool</p>
+                <p class="panel-kicker">资源池</p>
                 <div class="panel-title">避险资源概况</div>
               </div>
               <span class="panel-chip">POI 资源盘点</span>
@@ -508,7 +512,7 @@
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Scenario Test</p>
+                <p class="panel-kicker">方案测试</p>
                 <div class="panel-title">新增点位情景对比</div>
               </div>
               <span class="panel-chip">实验三</span>
@@ -519,7 +523,7 @@
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Validation</p>
+                <p class="panel-kicker">模型验证</p>
                 <div class="panel-title">模型与实验说明</div>
               </div>
               <span class="panel-chip">实验一 / 二 / 四</span>
@@ -528,11 +532,11 @@
           </div>
         </section>
 
-        <section class="grid two-cols observe-section" id="section-warning" data-nav-section data-chapter="05 / ALERT">
+        <section class="grid two-cols observe-section" id="section-warning" data-nav-section data-chapter="05 / 预警">
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Warning Board</p>
+                <p class="panel-kicker">预警面板</p>
                 <div class="panel-title">实时预警与推演等级</div>
               </div>
               <span id="warning-chip" class="panel-chip">双场景</span>
@@ -544,7 +548,7 @@
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Official Cooling</p>
+                <p class="panel-kicker">官方纳凉</p>
                 <div class="panel-title">官方通报与在运点位</div>
               </div>
               <span id="official-chip" class="panel-chip">官方页面监测</span>
@@ -555,11 +559,11 @@
           </div>
         </section>
 
-        <section class="grid two-cols observe-section" id="section-evidence" data-nav-section data-chapter="06 / EVIDENCE">
+        <section class="grid two-cols observe-section" id="section-evidence" data-nav-section data-chapter="06 / 证据">
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Evidence Chain</p>
+                <p class="panel-kicker">证据链</p>
                 <div class="panel-title">自动刷新与来源追踪</div>
               </div>
               <span id="evidence-chip" class="panel-chip">上游状态</span>
@@ -572,7 +576,7 @@
           <div class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Method Basis</p>
+                <p class="panel-kicker">方法依据</p>
                 <div class="panel-title">方法证明与外部参考</div>
               </div>
               <span id="reference-chip" class="panel-chip">政策 / 数据 / 方法</span>
@@ -583,10 +587,10 @@
           </div>
         </section>
 
-        <section class="panel observe-section" id="section-sites" data-nav-section data-chapter="07 / SITES">
+        <section class="panel observe-section" id="section-sites" data-nav-section data-chapter="07 / 点位">
           <div class="panel-head">
             <div>
-              <p class="panel-kicker">Recommended Sites</p>
+              <p class="panel-kicker">推荐点位</p>
               <div class="panel-title">新增临时纳凉点推荐</div>
             </div>
             <span id="recommendation-scenario-chip" class="panel-chip">默认方案</span>
@@ -613,13 +617,24 @@
 
       <footer class="footer">
         <div class="footer-note">
-          数据链路：WorldPop 最新发布 / OpenStreetMap / Geofabrik / Open-Meteo / 武汉官方公开页面
+          数据链路：WorldPop 发布说明 / 人口估算代理 / OpenStreetMap / Geofabrik / Open-Meteo / 武汉官方公开页面
         </div>
         <div class="footer-note">
           最近更新：<span id="footer-updated">--</span>
         </div>
       </footer>
     </div>
-    <script src="/static/app.js?v=20260424-ui-fix3"></script>
+    <script src="/static/vendor/gsap/gsap.min.js?v=3.13.0"></script>
+    <script src="/static/vendor/gsap/ScrollTrigger.min.js?v=3.13.0"></script>
+    <script src="/static/vendor/gsap/Flip.min.js?v=3.13.0"></script>
+    <script src="/static/vendor/gsap/MotionPathPlugin.min.js?v=3.13.0"></script>
+    <script src="/static/vendor/gsap/Observer.min.js?v=3.13.0"></script>
+    <script src="/static/vendor/gsap/SplitText.min.js?v=3.13.0"></script>
+    <script src="/static/vendor/three/three.min.js?v=0.149.0"></script>
+    <script src="/static/vendor/anime/anime.min.js?v=3.2.2"></script>
+    <script src="/static/vendor/lottie/lottie.min.js?v=5.12.2"></script>
+    <script src="/static/motion.js?v=20260430-page-deck-fast1"></script>
+    <script src="/static/motion-extras.js?v=20260430-page-deck-fast1"></script>
+    <script src="/static/app.js?v=20260430-page-deck-fast1"></script>
   </body>
 </html>

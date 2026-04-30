@@ -1,21 +1,10 @@
-import re
 import pickle
-from collections import defaultdict
+import random
 
 import networkx as nx
 import pulp
 
-from common import (
-    DATA_DIR,
-    PROCESSED_DIR,
-    current_timestamp,
-    ensure_directories,
-    haversine_km,
-    load_config,
-    normalize,
-    read_json,
-    write_json,
-)
+from common import DATA_DIR, PROCESSED_DIR, current_timestamp, ensure_directories, haversine_km, load_config, read_json, write_json
 
 
 EXISTING_ACTIVE_CATEGORIES = {"community_centre", "social_facility", "official_cooling_site"}
@@ -27,299 +16,26 @@ ALL_SUPPORT_SCOPE_KEY = "all_support_resources"
 BASELINE_SCOPE_KEY = "existing_active_cooling_resources"
 CANDIDATE_CATEGORY_LABELS = {"library": "图书馆", "park": "公园"}
 OFFICIAL_SITE_EXCLUSION_RADIUS_KM = 0.25
-QUALITY_BONUS_WEIGHT = 0.18
-BACKUP_BONUS_WEIGHT = 0.04
-DISTRICT_PRIORITY_MIN = 0.9
-DISTRICT_PRIORITY_MAX = 1.25
-
-CANDIDATE_BASE_PROFILES = {
+STRATEGY_COMPARISON_SITE_COUNT = 5
+RANDOM_STRATEGY_RUNS = 100
+FACILITY_PROFILES = {
     "library": {
-        "refuge_mode": "indoor",
-        "refuge_mode_label": "室内降温",
-        "capacity_units": 7,
-        "cooling_readiness_score": 1.0,
-        "service_window_score": 0.72,
-        "access_openness_score": 0.92,
+        "refuge_mode_label": "室内冷却",
+        "capacity_units": 180,
+        "service_window_score": 0.76,
+        "access_openness_score": 0.72,
+        "mode_reason": "室内降温",
+        "window_reason": "固定开放时段",
     },
     "park": {
-        "refuge_mode": "green_space",
-        "refuge_mode_label": "绿地缓热",
-        "capacity_units": 6,
-        "cooling_readiness_score": 0.74,
-        "service_window_score": 0.94,
-        "access_openness_score": 0.96,
+        "refuge_mode_label": "绿荫避暑",
+        "capacity_units": 260,
+        "service_window_score": 0.93,
+        "access_openness_score": 0.88,
+        "mode_reason": "绿地缓热",
+        "window_reason": "长时开放",
     },
 }
-
-
-def clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
-    return max(minimum, min(maximum, value))
-
-
-def nearest_district_name(lat: float, lon: float, hotspots: list[dict]) -> str:
-    if not hotspots:
-        return "未标注"
-    best_name = hotspots[0]["name"]
-    best_distance = float("inf")
-    for hotspot in hotspots:
-        distance = haversine_km(lat, lon, hotspot["lat"], hotspot["lon"])
-        if distance < best_distance:
-            best_distance = distance
-            best_name = hotspot["name"]
-    return best_name
-
-
-def is_placeholder_name(name: str | None) -> bool:
-    if not name:
-        return True
-    text = name.strip()
-    if not text:
-        return True
-    if text.startswith("未命名"):
-        return True
-    return bool(re.fullmatch(r"\S+\d{6,}", text))
-
-
-def build_display_name(facility: dict, district: str) -> str:
-    name = str(facility.get("name") or "").strip()
-    if not is_placeholder_name(name):
-        return name
-
-    category_label = facility.get("category_label") or CANDIDATE_CATEGORY_LABELS.get(facility.get("category"), "候选点")
-    suffix = str(facility.get("id") or "")[-4:]
-    if district and suffix:
-        return f"{district}{category_label}候选点 {suffix}"
-    if district:
-        return f"{district}{category_label}候选点"
-    if suffix:
-        return f"{category_label}候选点 {suffix}"
-    return f"{category_label}候选点"
-
-
-def get_opening_hours_text(facility: dict) -> str | None:
-    opening_hours = facility.get("opening_hours")
-    if opening_hours:
-        return opening_hours
-    tags = facility.get("tags") or {}
-    return tags.get("opening_hours")
-
-
-def infer_max_closing_hour(opening_hours: str | None) -> float | None:
-    if not opening_hours:
-        return None
-    text = opening_hours.lower().strip()
-    if "24/7" in text or "24 hours" in text:
-        return 24.0
-    matches = re.findall(r"-(\d{1,2})(?::(\d{2}))?", text)
-    if not matches:
-        return None
-    closing_hours = []
-    for hour_text, minute_text in matches:
-        hour = int(hour_text)
-        minute = int(minute_text or 0)
-        closing_hours.append(hour + minute / 60)
-    return max(closing_hours) if closing_hours else None
-
-
-def infer_capacity_units(facility: dict) -> int:
-    category = facility.get("category")
-    name = facility.get("name", "")
-    base_units = CANDIDATE_BASE_PROFILES.get(category, {}).get("capacity_units", 5)
-
-    if category == "library":
-        if any(keyword in name for keyword in ("大学", "学院", "校区", "学部")):
-            base_units -= 2
-        elif any(keyword in name for keyword in ("少儿", "少年", "儿童")):
-            base_units -= 1
-        elif any(keyword in name for keyword in ("市图书馆", "区图书馆", "总馆")):
-            base_units += 1
-    elif category == "park":
-        if any(keyword in name for keyword in ("森林公园", "江滩", "湿地", "生态", "体育公园")):
-            base_units += 3
-        elif "口袋公园" in name:
-            base_units -= 1
-        elif any(keyword in name for keyword in ("花园", "广场", "小树林", "露天")):
-            base_units -= 1
-
-    return max(3, base_units)
-
-
-def infer_access_openness_score(facility: dict) -> float:
-    tags = facility.get("tags") or {}
-    access = str(tags.get("access", "")).lower()
-    name = facility.get("name", "")
-    base_score = CANDIDATE_BASE_PROFILES.get(facility.get("category"), {}).get("access_openness_score", 0.9)
-
-    if access and access not in {"yes", "public", "permissive"}:
-        return 0.45
-    if any(keyword in name for keyword in ("大学", "学院", "校区", "学部", "酒店", "会所")):
-        return min(base_score, 0.68)
-    if any(keyword in name for keyword in ("小区", "住宅")):
-        return min(base_score, 0.8)
-    return base_score
-
-
-def infer_cooling_readiness_score(facility: dict) -> float:
-    category = facility.get("category")
-    name = facility.get("name", "")
-    base_score = CANDIDATE_BASE_PROFILES.get(category, {}).get("cooling_readiness_score", 0.78)
-
-    if category == "library":
-        if any(keyword in name for keyword in ("大学", "学院", "校区", "学部")):
-            base_score -= 0.12
-        elif any(keyword in name for keyword in ("少儿", "少年", "儿童")):
-            base_score -= 0.04
-    elif category == "park":
-        if "口袋公园" in name:
-            base_score -= 0.04
-        elif any(keyword in name for keyword in ("森林公园", "江滩", "湿地", "生态")):
-            base_score += 0.06
-    return round(clamp(base_score, 0.55, 1.0), 3)
-
-
-def infer_service_window_score(facility: dict) -> float:
-    category = facility.get("category")
-    default_score = CANDIDATE_BASE_PROFILES.get(category, {}).get("service_window_score", 0.8)
-    closing_hour = infer_max_closing_hour(get_opening_hours_text(facility))
-    if closing_hour is None:
-        return default_score
-    if closing_hour >= 22:
-        return 1.0
-    if closing_hour >= 20:
-        return 0.92
-    if closing_hour >= 18:
-        return 0.82
-    return 0.7
-
-
-def build_district_priority_map(
-    high_risk_cells: list[dict],
-    baseline_covered: dict[str, bool],
-    demand_weight: dict[str, float],
-) -> dict[str, float]:
-    district_total_weight: dict[str, float] = defaultdict(float)
-    district_uncovered_weight: dict[str, float] = defaultdict(float)
-    district_total_cells: dict[str, int] = defaultdict(int)
-    district_covered_cells: dict[str, int] = defaultdict(int)
-
-    for cell in high_risk_cells:
-        district = cell.get("district", "未标注")
-        weight = demand_weight.get(cell["id"], 0.0)
-        district_total_weight[district] += weight
-        district_total_cells[district] += 1
-        if baseline_covered.get(cell["id"]):
-            district_covered_cells[district] += 1
-        else:
-            district_uncovered_weight[district] += weight
-
-    uncovered_values = list(district_uncovered_weight.values()) or [0.0]
-    uncovered_min = min(uncovered_values)
-    uncovered_max = max(uncovered_values) if max(uncovered_values) > uncovered_min else uncovered_min + 1.0
-
-    district_priority = {}
-    for district, total_weight in district_total_weight.items():
-        uncovered_weight = district_uncovered_weight.get(district, 0.0)
-        uncovered_ratio = uncovered_weight / max(total_weight, 1.0)
-        coverage_gap = 1 - (district_covered_cells.get(district, 0) / max(district_total_cells.get(district, 1), 1))
-        priority = (
-            DISTRICT_PRIORITY_MIN
-            + normalize(uncovered_weight, uncovered_min, uncovered_max) * 0.18
-            + uncovered_ratio * 0.12
-            + coverage_gap * 0.05
-        )
-        district_priority[district] = round(clamp(priority, DISTRICT_PRIORITY_MIN, DISTRICT_PRIORITY_MAX), 3)
-    return district_priority
-
-
-def build_candidate_profile(
-    facility: dict,
-    hotspots: list[dict],
-    district_priority_map: dict[str, float],
-) -> dict:
-    profile = CANDIDATE_BASE_PROFILES.get(facility.get("category"), {})
-    district = nearest_district_name(facility["lat"], facility["lon"], hotspots)
-    capacity_units = infer_capacity_units(facility)
-    cooling_readiness_score = infer_cooling_readiness_score(facility)
-    service_window_score = infer_service_window_score(facility)
-    access_openness_score = infer_access_openness_score(facility)
-    district_priority_score = district_priority_map.get(district, 1.0)
-    display_name = build_display_name(facility, district)
-
-    normalized_capacity = clamp(capacity_units / 10, 0.3, 1.0)
-    operational_suitability = (
-        normalized_capacity * 0.35
-        + cooling_readiness_score * 0.30
-        + service_window_score * 0.20
-        + access_openness_score * 0.15
-    ) * district_priority_score
-
-    return {
-        "district": district,
-        "display_name": display_name,
-        "capacity_units": capacity_units,
-        "cooling_readiness_score": round(cooling_readiness_score, 3),
-        "service_window_score": round(service_window_score, 3),
-        "access_openness_score": round(access_openness_score, 3),
-        "district_priority_score": round(district_priority_score, 3),
-        "operational_suitability": round(operational_suitability, 3),
-        "refuge_mode": profile.get("refuge_mode", "mixed"),
-        "refuge_mode_label": profile.get("refuge_mode_label", "混合避暑"),
-        "opening_hours_text": get_opening_hours_text(facility),
-    }
-
-
-def build_quality_lookup(
-    uncovered_cells: list[dict],
-    candidate_facilities: list[dict],
-    time_lookup: dict[tuple[str, int], float],
-    cutoff_min: int,
-) -> dict[tuple[str, int], float]:
-    quality_lookup: dict[tuple[str, int], float] = {}
-    for cell in uncovered_cells:
-        cell_id = cell["id"]
-        for facility in candidate_facilities:
-            facility_id = facility["id"]
-            travel_time = time_lookup.get((cell_id, facility_id))
-            if travel_time is None or travel_time > cutoff_min:
-                continue
-
-            time_score = clamp(1 - (travel_time / max(cutoff_min, 1)) * 0.75, 0.25, 1.0)
-            quality_lookup[(cell_id, facility_id)] = round(
-                time_score
-                * facility.get("cooling_readiness_score", 1.0)
-                * facility.get("service_window_score", 1.0)
-                * facility.get("access_openness_score", 1.0)
-                * facility.get("district_priority_score", 1.0),
-                4,
-            )
-    return quality_lookup
-
-
-def demand_to_service_units(cell: dict) -> int:
-    population = cell.get("estimated_elderly_population", 0)
-    risk_score = cell.get("risk_score", 0)
-    units = round(population / 4500 + risk_score / 35)
-    return max(1, units)
-
-
-def build_selection_reason(facility: dict, covered_cells: int, improved_cells: int) -> str:
-    reasons = []
-    if covered_cells > 0:
-        reasons.append("补盲覆盖")
-    elif improved_cells > 0:
-        reasons.append("均时优化")
-
-    if facility.get("refuge_mode") == "indoor":
-        reasons.append("室内降温")
-    elif facility.get("refuge_mode") == "green_space":
-        reasons.append("绿地缓热")
-
-    if facility.get("service_window_score", 0) >= 0.9:
-        reasons.append("长时开放")
-    if facility.get("district_priority_score", 1.0) >= 1.08:
-        reasons.append("片区短板优先")
-
-    return " + ".join(reasons[:3]) if reasons else "综合补位"
 
 
 def load_graph() -> nx.Graph | None:
@@ -408,64 +124,67 @@ def derive_travel_penalty_minutes(
     return round(max(max(observed) + 5, DEFAULT_TRAVEL_PENALTY_MIN, float(cutoff_min * 3)), 2)
 
 
-def solve_capacity_aware_mclp(
-    uncovered_cells: list[dict],
+def weighted_gini(values: list[float], weights: list[float]) -> float:
+    paired = [
+        (max(float(value), 0.0), max(float(weight), 0.0))
+        for value, weight in zip(values, weights)
+        if weight is not None and float(weight) > 0
+    ]
+    if not paired:
+        return 0.0
+
+    total_weight = sum(weight for _, weight in paired)
+    total_weighted_value = sum(value * weight for value, weight in paired)
+    if total_weight <= 0 or total_weighted_value <= 0:
+        return 0.0
+
+    paired.sort(key=lambda item: item[0])
+    cumulative_weight = 0.0
+    cumulative_value = 0.0
+    previous_share_weight = 0.0
+    previous_share_value = 0.0
+    area = 0.0
+
+    for value, weight in paired:
+        cumulative_weight += weight
+        cumulative_value += value * weight
+        share_weight = cumulative_weight / total_weight
+        share_value = cumulative_value / total_weighted_value
+        area += (previous_share_value + share_value) * (share_weight - previous_share_weight) / 2
+        previous_share_weight = share_weight
+        previous_share_value = share_value
+
+    return max(0.0, min(1.0, 1 - 2 * area))
+
+
+def solve_mclp(
+    high_risk_cells: list[dict],
     candidate_facilities: list[dict],
+    baseline_covered: dict[str, bool],
     coverage_map: dict[str, list[int]],
     demand_weight: dict[str, float],
-    demand_units: dict[str, int],
-    quality_lookup: dict[tuple[str, int], float],
     site_count: int,
 ) -> list[int]:
-    if not candidate_facilities or not uncovered_cells:
+    if not candidate_facilities:
         return []
 
-    model = pulp.LpProblem(f"heat_guard_operational_mclp_{site_count}", pulp.LpMaximize)
+    model = pulp.LpProblem(f"heat_guard_mclp_{site_count}", pulp.LpMaximize)
     x = {facility["id"]: pulp.LpVariable(f"x_{facility['id']}", cat="Binary") for facility in candidate_facilities}
-    y = {cell["id"]: pulp.LpVariable(f"y_{cell['id']}", cat="Binary") for cell in uncovered_cells}
-    z = {
-        (cell["id"], facility_id): pulp.LpVariable(f"z_{cell['id']}_{facility_id}", cat="Binary")
-        for cell in uncovered_cells
-        for facility_id in coverage_map.get(cell["id"], [])
-    }
+    y = {cell["id"]: pulp.LpVariable(f"y_{cell['id']}", cat="Binary") for cell in high_risk_cells}
 
-    model += (
-        pulp.lpSum(demand_weight[cell["id"]] * y[cell["id"]] for cell in uncovered_cells)
-        + QUALITY_BONUS_WEIGHT
-        * pulp.lpSum(
-            demand_weight[cell_id] * quality_lookup.get((cell_id, facility_id), 0.0) * z[(cell_id, facility_id)]
-            for cell_id, facility_id in z
-        )
-    )
+    model += pulp.lpSum(demand_weight[cell["id"]] * y[cell["id"]] for cell in high_risk_cells)
     model += pulp.lpSum(x[facility["id"]] for facility in candidate_facilities) <= site_count
 
-    for cell in uncovered_cells:
+    for cell in high_risk_cells:
         cell_id = cell["id"]
+        if baseline_covered[cell_id]:
+            model += y[cell_id] == 1
+            continue
         covered_by = coverage_map.get(cell_id, [])
         if covered_by:
-            model += pulp.lpSum(z[(cell_id, facility_id)] for facility_id in covered_by) >= y[cell_id]
-            model += pulp.lpSum(z[(cell_id, facility_id)] for facility_id in covered_by) <= 1
-            for facility_id in covered_by:
-                model += z[(cell_id, facility_id)] <= x[facility_id]
+            model += y[cell_id] <= pulp.lpSum(x[facility_id] for facility_id in covered_by)
         else:
             model += y[cell_id] == 0
-
-    for facility in candidate_facilities:
-        facility_id = facility["id"]
-        assignments = [
-            z[(cell["id"], facility_id)]
-            for cell in uncovered_cells
-            if (cell["id"], facility_id) in z
-        ]
-        if assignments:
-            model += (
-                pulp.lpSum(
-                    demand_units[cell["id"]] * z[(cell["id"], facility_id)]
-                    for cell in uncovered_cells
-                    if (cell["id"], facility_id) in z
-                )
-                <= facility.get("capacity_units", 5) * x[facility_id]
-            )
 
     solver = pulp.PULP_CBC_CMD(msg=False)
     status = model.solve(solver)
@@ -510,18 +229,10 @@ def fill_with_time_improvement(
 
                 current_time = current_best_times[cell_id]
                 reference_time = current_time if current_time is not None else travel_penalty_minutes
-                operational_suitability = facility.get("operational_suitability", 1.0)
                 if new_time >= reference_time:
-                    if current_time is not None and current_time <= 15 and new_time <= 15:
-                        gain += demand_weight[cell_id] * BACKUP_BONUS_WEIGHT * facility.get(
-                            "cooling_readiness_score",
-                            1.0,
-                        )
                     continue
 
-                gain += demand_weight[cell_id] * (reference_time - new_time) * operational_suitability
-                if current_time is None and new_time <= 15:
-                    gain += demand_weight[cell_id] * 0.25 * operational_suitability
+                gain += demand_weight[cell_id] * (reference_time - new_time)
 
             if gain > best_gain:
                 best_gain = gain
@@ -605,12 +316,18 @@ def evaluate_solution(
     total_weight_for_minutes = 0.0
     uncovered_population = 0
 
+    district_totals: dict[str, int] = {}
+    district_cell_totals: dict[str, int] = {}
+    scenario_district_covered: dict[str, int] = {}
+    scenario_district_cells: dict[str, int] = {}
+
     for cell in high_risk_cells:
         cell_id = cell["id"]
         times = [time_lookup[(cell_id, facility_id)] for facility_id in active_ids if (cell_id, facility_id) in time_lookup]
         scenario_time = min(times) if times else None
         population = cell["estimated_elderly_population"]
         weight = demand_weight[cell_id]
+        district = cell.get("district", "未知区")
 
         effective_scenario_time = scenario_time if scenario_time is not None else travel_penalty_minutes
         travel_minutes_weighted += effective_scenario_time * population
@@ -619,19 +336,63 @@ def evaluate_solution(
         if scenario_time is not None and scenario_time <= cutoff_min:
             covered_population += population
             covered_weight += weight
+            scenario_district_covered[district] = scenario_district_covered.get(district, 0) + population
+            scenario_district_cells[district] = scenario_district_cells.get(district, 0) + 1
         else:
             uncovered_population += population
 
     baseline_covered_population = 0
     baseline_travel_minutes = 0.0
     baseline_total_weight_for_minutes = 0.0
+    baseline_district_covered: dict[str, int] = {}
+    baseline_district_cells: dict[str, int] = {}
+
     for cell in high_risk_cells:
         baseline_time = baseline_times[cell["id"]]
+        district = cell.get("district", "未知区")
+        district_totals[district] = district_totals.get(district, 0) + cell["estimated_elderly_population"]
+        district_cell_totals[district] = district_cell_totals.get(district, 0) + 1
+
         if baseline_time is not None and baseline_time <= cutoff_min:
             baseline_covered_population += cell["estimated_elderly_population"]
+            baseline_district_covered[district] = baseline_district_covered.get(district, 0) + cell["estimated_elderly_population"]
+            baseline_district_cells[district] = baseline_district_cells.get(district, 0) + 1
+
         effective_baseline_time = baseline_time if baseline_time is not None else travel_penalty_minutes
         baseline_travel_minutes += effective_baseline_time * cell["estimated_elderly_population"]
         baseline_total_weight_for_minutes += cell["estimated_elderly_population"]
+
+    district_coverage_change = {}
+    for district, total_pop in district_totals.items():
+        if total_pop == 0:
+            continue
+        base_rate = baseline_district_covered.get(district, 0) / total_pop
+        scene_rate = scenario_district_covered.get(district, 0) / total_pop
+        total_cells = district_cell_totals.get(district, 0)
+        baseline_cell_rate = baseline_district_cells.get(district, 0) / max(total_cells, 1)
+        scenario_cell_rate = scenario_district_cells.get(district, 0) / max(total_cells, 1)
+        district_coverage_change[district] = {
+            "high_risk_population": total_pop,
+            "high_risk_cell_count": total_cells,
+            "baseline_rate": round(base_rate, 4),
+            "scenario_rate": round(scene_rate, 4),
+            "improvement": round(scene_rate - base_rate, 4),
+            "baseline_covered_population": baseline_district_covered.get(district, 0),
+            "scenario_covered_population": scenario_district_covered.get(district, 0),
+            "baseline_cell_coverage_rate": round(baseline_cell_rate, 4),
+            "scenario_cell_coverage_rate": round(scenario_cell_rate, 4),
+        }
+
+    scenario_minutes = []
+    scenario_weights = []
+    for cell in high_risk_cells:
+        cell_id = cell["id"]
+        times = [time_lookup[(cell_id, facility_id)] for facility_id in active_ids if (cell_id, facility_id) in time_lookup]
+        scenario_minutes.append(min(times) if times else travel_penalty_minutes)
+        scenario_weights.append(cell["estimated_elderly_population"])
+
+    gini_coefficient = weighted_gini(scenario_minutes, scenario_weights)
+    worst_improvement = min((v["improvement"] for v in district_coverage_change.values()), default=0.0)
 
     return {
         "covered_population": covered_population,
@@ -646,7 +407,75 @@ def evaluate_solution(
             baseline_travel_minutes / max(baseline_total_weight_for_minutes, 1),
             2,
         ),
+        "fairness_metrics": {
+            "gini_coefficient": round(gini_coefficient, 4),
+            "worst_district_improvement": round(worst_improvement, 4),
+            "district_coverage_change": district_coverage_change,
+        },
     }
+
+
+def get_facility_profile(category: str) -> dict:
+    return FACILITY_PROFILES.get(
+        category,
+        {
+            "refuge_mode_label": "综合避暑",
+            "capacity_units": 160,
+            "service_window_score": 0.72,
+            "access_openness_score": 0.72,
+            "mode_reason": "综合补位",
+            "window_reason": "常规开放",
+        },
+    )
+
+
+def infer_facility_district(facility: dict, hotspots: list[dict]) -> str:
+    if not hotspots:
+        return "未知区"
+    best_name = hotspots[0]["name"]
+    best_distance = float("inf")
+    for hotspot in hotspots:
+        distance = haversine_km(facility["lat"], facility["lon"], hotspot["lat"], hotspot["lon"])
+        if distance < best_distance:
+            best_distance = distance
+            best_name = hotspot["name"]
+    return best_name
+
+
+UNNAMED_CATEGORY_DISPLAY = {
+    "公园": "开放绿地",
+    "图书馆": "公共阅读空间",
+    "医院": "医疗支撑",
+    "药店": "药事服务",
+    "社区中心": "社区服务",
+    "养老服务设施": "养老服务",
+}
+
+
+def is_unnamed_osm_name(name: str) -> bool:
+    return "未命名" in name or name.startswith("OSM")
+
+
+def build_facility_display_name(facility: dict, district: str) -> str:
+    name = facility.get("name") or ""
+    category_label = facility.get("category_label") or "设施"
+    if name and not is_unnamed_osm_name(name):
+        return name
+
+    district_label = "" if district == "未知区" else district
+    category_display = UNNAMED_CATEGORY_DISPLAY.get(category_label, category_label)
+    return f"{district_label}{category_display}候选点"
+
+
+def build_facility_source_note(facility: dict) -> str | None:
+    name = facility.get("name") or ""
+    if not is_unnamed_osm_name(name):
+        return None
+    osm_id = facility.get("id")
+    category_label = facility.get("category_label") or "设施"
+    if osm_id:
+        return f"OSM 要素 {osm_id} 真实存在但缺少 name 标签，页面按类别和服务片区生成展示名。"
+    return f"OSM {category_label}要素缺少 name 标签，页面按类别和服务片区生成展示名。"
 
 
 def build_selected_site_details(
@@ -658,16 +487,20 @@ def build_selected_site_details(
     facility_lookup: dict[int, dict],
     cutoff_min: int,
     travel_penalty_minutes: float,
+    hotspots: list[dict],
 ) -> list[dict]:
     current_best_times = compute_current_best_times(high_risk_cells, existing_ids, time_lookup)
     details = []
     for facility_id in selected_ids:
         facility = facility_lookup[facility_id]
+        profile = get_facility_profile(facility.get("category", ""))
         covered_cells = 0
         covered_population = 0
         incremental_weight = 0.0
         improved_cells = 0
         weighted_time_saving = 0.0
+        district_counter: dict[str, int] = {}
+        max_district_priority = 0.0
 
         for cell in high_risk_cells:
             cell_id = cell["id"]
@@ -682,6 +515,9 @@ def build_selected_site_details(
 
             improved_cells += 1
             weighted_time_saving += (reference_time - time_value) * demand_weight[cell_id]
+            district = cell.get("district", "未知区")
+            district_counter[district] = district_counter.get(district, 0) + cell["estimated_elderly_population"]
+            max_district_priority = max(max_district_priority, min(1.0, (cell.get("risk_score", 0) / 100)))
 
             if reference_time > cutoff_min and time_value <= cutoff_min:
                 covered_cells += 1
@@ -697,14 +533,45 @@ def build_selected_site_details(
             if current_time is None or time_value < current_time:
                 current_best_times[cell_id] = time_value
 
+        service_window_score = profile["service_window_score"]
+        access_openness_score = profile["access_openness_score"]
+        capacity_units = profile["capacity_units"]
+        district_priority_score = round(max_district_priority, 4)
+        operational_suitability = round(
+            min(
+                0.99,
+                0.25 * min(capacity_units / 300, 1.0)
+                + 0.25 * service_window_score
+                + 0.20 * access_openness_score
+                + 0.30 * district_priority_score,
+            ),
+            3,
+        )
+        reasons = []
+        if covered_population > 0:
+            reasons.append("补盲覆盖")
+        if weighted_time_saving > 0:
+            reasons.append(profile["mode_reason"])
+        if district_priority_score >= 0.7:
+            reasons.append("片区短板优先")
+        if service_window_score >= 0.85:
+            reasons.append(profile["window_reason"])
+
+        district = infer_facility_district(facility, hotspots)
+        display_name = build_facility_display_name(facility, district)
+        source_note = build_facility_source_note(facility)
+
         details.append(
             {
                 "poi_id": facility["id"],
-                "name": facility["name"],
-                "display_name": facility.get("display_name", facility["name"]),
+                "name": display_name,
+                "source_name": facility["name"],
+                "source_note": source_note,
+                "name_quality": "generated_from_unnamed_osm" if source_note else "source_named",
                 "category": facility["category"],
                 "category_label": facility["category_label"],
-                "district": facility.get("district"),
+                "display_name": display_name,
+                "district": district,
                 "lat": facility["lat"],
                 "lon": facility["lon"],
                 "covered_cells": covered_cells,
@@ -713,17 +580,14 @@ def build_selected_site_details(
                 "weighted_risk": round(incremental_weight, 2),
                 "weighted_time_saving": round(weighted_time_saving, 2),
                 "score": round(incremental_weight + weighted_time_saving, 2),
-                "capacity_units": facility.get("capacity_units"),
-                "cooling_readiness_score": facility.get("cooling_readiness_score"),
-                "service_window_score": facility.get("service_window_score"),
-                "access_openness_score": facility.get("access_openness_score"),
-                "district_priority_score": facility.get("district_priority_score"),
-                "operational_suitability": facility.get("operational_suitability"),
-                "refuge_mode": facility.get("refuge_mode"),
-                "refuge_mode_label": facility.get("refuge_mode_label"),
-                "opening_hours_text": facility.get("opening_hours_text"),
-                "selection_reason": build_selection_reason(facility, covered_cells, improved_cells),
-                "strategy": "mclp_capacity_readiness_fairness_hybrid",
+                "refuge_mode_label": profile["refuge_mode_label"],
+                "capacity_units": capacity_units,
+                "service_window_score": round(service_window_score, 3),
+                "access_openness_score": round(access_openness_score, 3),
+                "district_priority_score": district_priority_score,
+                "operational_suitability": operational_suitability,
+                "selection_reason": " + ".join(dict.fromkeys(reasons)) if reasons else "综合补位",
+                "strategy": "mclp_coverage_time_hybrid",
             }
         )
     details.sort(key=lambda item: item["score"], reverse=True)
@@ -751,6 +615,117 @@ def filter_officially_active_candidates(
     return filtered
 
 
+def summarize_strategy(name: str, metrics: dict, selected_ids: list[int], *, runs: int | None = None) -> dict:
+    payload = {
+        "name": name,
+        "coverage_rate_population": round(metrics.get("coverage_rate_population", 0), 4),
+        "coverage_improvement_population": int(metrics.get("coverage_improvement_population", 0)),
+        "average_travel_minutes": round(metrics.get("average_travel_minutes", 0), 2),
+        "gini_coefficient": round(metrics.get("fairness_metrics", {}).get("gini_coefficient", 0), 4),
+        "selected_site_count": len(selected_ids),
+        "selected_site_ids": selected_ids,
+    }
+    if runs is not None:
+        payload["runs"] = runs
+    return payload
+
+
+def build_strategy_comparison(
+    high_risk_cells: list[dict],
+    candidate_facilities: list[dict],
+    existing_ids: set[int],
+    facility_lookup: dict[int, dict],
+    time_lookup: dict[tuple[str, int], float],
+    cutoff_min: int,
+    demand_weight: dict[str, float],
+    baseline_times: dict[str, float | None],
+    travel_penalty_minutes: float,
+    baseline_covered: dict[str, bool],
+    coverage_map: dict[str, list[int]],
+    scenario_metrics: dict,
+    scenario_selected_ids: list[int],
+) -> dict:
+    if not candidate_facilities:
+        return {"site_count": STRATEGY_COMPARISON_SITE_COUNT, "strategies": []}
+
+    baseline_metrics = evaluate_solution(
+        high_risk_cells,
+        set(),
+        existing_ids,
+        facility_lookup,
+        time_lookup,
+        cutoff_min,
+        demand_weight,
+        baseline_times,
+        travel_penalty_minutes,
+    )
+
+    greedy_ids = greedy_fallback(
+        high_risk_cells,
+        candidate_facilities,
+        baseline_covered,
+        coverage_map,
+        demand_weight,
+        STRATEGY_COMPARISON_SITE_COUNT,
+    )
+    greedy_metrics = evaluate_solution(
+        high_risk_cells,
+        set(greedy_ids),
+        existing_ids,
+        facility_lookup,
+        time_lookup,
+        cutoff_min,
+        demand_weight,
+        baseline_times,
+        travel_penalty_minutes,
+    )
+
+    random_engine = random.Random(20260424)
+    candidate_ids = [facility["id"] for facility in candidate_facilities]
+    random_coverages = []
+    random_times = []
+    random_ginis = []
+    random_improvements = []
+    sample_runs = min(RANDOM_STRATEGY_RUNS, max(1, len(candidate_ids)))
+
+    for _ in range(sample_runs):
+        chosen_ids = random_engine.sample(candidate_ids, min(STRATEGY_COMPARISON_SITE_COUNT, len(candidate_ids)))
+        metrics = evaluate_solution(
+            high_risk_cells,
+            set(chosen_ids),
+            existing_ids,
+            facility_lookup,
+            time_lookup,
+            cutoff_min,
+            demand_weight,
+            baseline_times,
+            travel_penalty_minutes,
+        )
+        random_coverages.append(metrics.get("coverage_rate_population", 0))
+        random_times.append(metrics.get("average_travel_minutes", 0))
+        random_ginis.append(metrics.get("fairness_metrics", {}).get("gini_coefficient", 0))
+        random_improvements.append(metrics.get("coverage_improvement_population", 0))
+
+    random_metrics = {
+        "coverage_rate_population": sum(random_coverages) / max(len(random_coverages), 1),
+        "average_travel_minutes": sum(random_times) / max(len(random_times), 1),
+        "coverage_improvement_population": round(sum(random_improvements) / max(len(random_improvements), 1)),
+        "fairness_metrics": {
+            "gini_coefficient": sum(random_ginis) / max(len(random_ginis), 1),
+        },
+    }
+
+    return {
+        "site_count": STRATEGY_COMPARISON_SITE_COUNT,
+        "strategies": [
+            summarize_strategy("现状下界 (无新增)", baseline_metrics, []),
+            summarize_strategy("随机选址 (选5点平均)", random_metrics, [], runs=sample_runs),
+            summarize_strategy("最大覆盖贪心基线", greedy_metrics, greedy_ids),
+            summarize_strategy("混合 MCLP 模型 (当前方案)", scenario_metrics, scenario_selected_ids),
+        ],
+    }
+
+
 def main() -> None:
     ensure_directories()
     config = load_config()
@@ -776,11 +751,12 @@ def main() -> None:
     candidate_facilities = [poi for poi in pois if poi["category"] in CANDIDATE_CATEGORIES]
     candidate_facilities = filter_officially_active_candidates(candidate_facilities, official_sites)
     facilities = existing_facilities + candidate_facilities
+    facility_lookup = {facility["id"]: facility for facility in facilities}
 
     if not high_risk_cells or not candidate_facilities:
         payload = {
             "generated_at": current_timestamp(),
-            "strategy": "mclp_capacity_readiness_fairness_hybrid",
+            "strategy": "mclp",
             "cutoff_min": cutoff_min,
             "baseline_scope": baseline_scope,
             "all_support_scope": all_support_scope,
@@ -791,13 +767,6 @@ def main() -> None:
                 "resource_count": len(candidate_facilities),
                 "official_active_site_count": len(official_sites),
                 "excluded_existing_official_sites": len([poi for poi in pois if poi["category"] in CANDIDATE_CATEGORIES]) - len(candidate_facilities),
-                "selection_dimensions": [
-                    "覆盖收益",
-                    "容量代理",
-                    "开放时段代理",
-                    "室内/绿地避暑适配度",
-                    "高风险片区优先度",
-                ],
             },
             "recommendations": [],
         }
@@ -824,20 +793,6 @@ def main() -> None:
         cell["id"]: round(cell["estimated_elderly_population"] * (cell["risk_score"] / 100), 4)
         for cell in high_risk_cells
     }
-    demand_units = {
-        cell["id"]: demand_to_service_units(cell)
-        for cell in high_risk_cells
-    }
-    district_priority_map = build_district_priority_map(high_risk_cells, baseline_covered, demand_weight)
-    candidate_facilities = [
-        {
-            **facility,
-            **build_candidate_profile(facility, hotspots, district_priority_map),
-        }
-        for facility in candidate_facilities
-    ]
-    facilities = existing_facilities + candidate_facilities
-    facility_lookup = {facility["id"]: facility for facility in facilities}
     coverage_map = {
         cell["id"]: [
             facility["id"]
@@ -846,8 +801,6 @@ def main() -> None:
         ]
         for cell in high_risk_cells
     }
-    uncovered_cells = [cell for cell in high_risk_cells if not baseline_covered[cell["id"]]]
-    quality_lookup = build_quality_lookup(uncovered_cells, candidate_facilities, time_lookup, cutoff_min)
     travel_penalty_minutes = derive_travel_penalty_minutes(cutoff_min, baseline_times, time_lookup)
     existing_ids = {facility["id"] for facility in existing_facilities}
 
@@ -866,13 +819,12 @@ def main() -> None:
     scenarios = []
     for site_count in SCENARIOS:
         try:
-            selected_ids = solve_capacity_aware_mclp(
-                uncovered_cells,
+            selected_ids = solve_mclp(
+                high_risk_cells,
                 candidate_facilities,
+                baseline_covered,
                 coverage_map,
                 demand_weight,
-                demand_units,
-                quality_lookup,
                 site_count,
             )
         except Exception:
@@ -908,6 +860,7 @@ def main() -> None:
             facility_lookup,
             cutoff_min,
             travel_penalty_minutes,
+            hotspots,
         )
         metrics = evaluate_solution(
             high_risk_cells,
@@ -930,9 +883,24 @@ def main() -> None:
         )
 
     default_scenario = next((item for item in scenarios if item["new_site_count"] == 5), scenarios[0])
+    strategy_comparison = build_strategy_comparison(
+        high_risk_cells,
+        candidate_facilities,
+        existing_ids,
+        facility_lookup,
+        time_lookup,
+        cutoff_min,
+        demand_weight,
+        baseline_times,
+        travel_penalty_minutes,
+        baseline_covered,
+        coverage_map,
+        default_scenario["metrics"],
+        [site["poi_id"] for site in default_scenario["selected_sites"]],
+    )
     recommendation_payload = {
         "generated_at": current_timestamp(),
-        "strategy": "mclp_capacity_readiness_fairness_hybrid" if used_network else "mclp_distance_proxy",
+        "strategy": "mclp_coverage_time_hybrid" if used_network else "mclp_distance_proxy",
         "cutoff_min": cutoff_min,
         "radius_km": config["service_thresholds_km"]["recommendation_coverage"],
         "baseline_scope": baseline_scope,
@@ -944,13 +912,6 @@ def main() -> None:
             "resource_count": len(candidate_facilities),
             "official_active_site_count": len(official_sites),
             "excluded_existing_official_sites": len([poi for poi in pois if poi["category"] in CANDIDATE_CATEGORIES]) - len(candidate_facilities),
-            "selection_dimensions": [
-                "覆盖收益",
-                "容量代理",
-                "开放时段代理",
-                "室内/绿地避暑适配度",
-                "高风险片区优先度",
-            ],
         },
         "baseline_metrics": baseline_metrics,
         "default_scenario": default_scenario["new_site_count"],
@@ -958,7 +919,7 @@ def main() -> None:
     }
     experiment_payload = {
         "generated_at": current_timestamp(),
-        "strategy": "mclp_capacity_readiness_fairness_hybrid" if used_network else "mclp_distance_proxy",
+        "strategy": "mclp_coverage_time_hybrid" if used_network else "mclp_distance_proxy",
         "cutoff_min": cutoff_min,
         "travel_penalty_minutes": travel_penalty_minutes,
         "existing_active_facility_count": len(existing_facilities),
@@ -973,24 +934,8 @@ def main() -> None:
             for cell in high_risk_cells
             if coverage_map.get(cell["id"])
         ),
-        "district_priority": district_priority_map,
-        "candidate_operational_summary": {
-            "indoor_candidate_count": sum(1 for facility in candidate_facilities if facility.get("refuge_mode") == "indoor"),
-            "green_space_candidate_count": sum(
-                1 for facility in candidate_facilities if facility.get("refuge_mode") == "green_space"
-            ),
-            "average_capacity_units": round(
-                sum(facility.get("capacity_units", 0) for facility in candidate_facilities)
-                / max(len(candidate_facilities), 1),
-                2,
-            ),
-            "average_operational_suitability": round(
-                sum(facility.get("operational_suitability", 0.0) for facility in candidate_facilities)
-                / max(len(candidate_facilities), 1),
-                3,
-            ),
-        },
         "baseline_metrics": baseline_metrics,
+        "strategy_comparison": strategy_comparison,
         "scenarios": scenarios,
     }
 

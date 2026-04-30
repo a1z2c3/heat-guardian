@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -8,7 +8,7 @@ from backend.app.data_loader import (
     load_accessibility_summary,
     load_competition_experiments,
     load_config,
-    load_data_authenticity,
+    load_data_authenticity_audit,
     load_official_cooling,
     load_optimization_experiments,
     load_poi_summary,
@@ -25,17 +25,6 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI(title="热龄卫士", version="0.4.0")
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
-
-
-@app.middleware("http")
-async def disable_browser_cache(request: Request, call_next):
-    response = await call_next(request)
-    path = request.url.path
-    if path == "/" or path == "/gallery" or path.startswith("/static/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
 
 
 @app.get("/api/health")
@@ -63,11 +52,6 @@ def data_sources() -> dict:
     return load_source_refresh_manifest()
 
 
-@app.get("/api/data-authenticity")
-def data_authenticity() -> dict:
-    return load_data_authenticity()
-
-
 @app.get("/api/accessibility/summary")
 def accessibility_summary() -> dict:
     return load_accessibility_summary()
@@ -81,6 +65,39 @@ def risk_summary() -> dict:
 @app.get("/api/risk/grid")
 def risk_grid() -> dict:
     return load_risk_grid()
+
+
+@app.get("/api/risk/grid/geojson")
+def risk_grid_geojson() -> dict:
+    grid_data = load_risk_grid()
+    features = []
+    for cell in grid_data.get("features", []):
+        polygon = cell.get("polygon")
+        if not polygon:
+            continue
+            
+        coords = list(polygon)
+        if coords and coords[0] != coords[-1]:
+            coords.append(coords[0])
+
+        # risk_grid.json 已按 [lon, lat] 存储 polygon，GeoJSON 可直接复用
+        geojson_coords = [[list(point) for point in coords]]
+
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": geojson_coords
+            },
+            "properties": {
+                k: v for k, v in cell.items() if k != "polygon"
+            }
+        })
+        
+    return {
+        "type": "FeatureCollection",
+        "features": features
+    }
 
 
 @app.get("/api/recommendations")
@@ -105,7 +122,6 @@ def dashboard() -> dict:
         "project_name": config.get("project_name", "热龄卫士"),
         "study_area": config.get("study_area", {}),
         "data_sources": load_source_refresh_manifest(),
-        "data_authenticity": load_data_authenticity(),
         "weather": load_weather(),
         "poi": load_poi_summary(),
         "official_cooling": load_official_cooling(),
@@ -114,6 +130,7 @@ def dashboard() -> dict:
         "recommendations": load_recommendations(),
         "optimization": load_optimization_experiments(),
         "experiments": load_competition_experiments(),
+        "data_authenticity": load_data_authenticity_audit(),
     }
 
 

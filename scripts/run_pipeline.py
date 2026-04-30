@@ -163,14 +163,17 @@ def build_experiment_input_signature() -> str:
 def build_authenticity_input_signature() -> str:
     return semantic_hash(
         {
-            "weather": semantic_hash_file(WEATHER_SUMMARY_PATH),
-            "population": semantic_hash_file(POPULATION_GRID_PATH),
-            "accessibility": semantic_hash_file(ACCESSIBILITY_SUMMARY_PATH),
-            "official_cooling": semantic_hash_file(OFFICIAL_COOLING_PATH),
-            "risk_summary": semantic_hash_file(RISK_SUMMARY_PATH),
-            "recommendations": semantic_hash_file(SITE_RECOMMENDATIONS_PATH),
-            "source_manifest": semantic_hash_file(EXTERNAL_MANIFEST_PATH),
-            "graph_status": semantic_hash_file(GRAPH_STATUS_PATH),
+            "weather_forecast_raw": file_stat_signature(RAW_DIR / "weather_forecast.json"),
+            "weather_archive_raw": file_stat_signature(RAW_DIR / "weather_archive_2025_warm_season.json"),
+            "official_cooling_raw": file_stat_signature(RAW_DIR / "official_cooling_sources_raw.json"),
+            "poi_raw": file_stat_signature(RAW_DIR / "osm_poi_raw.json"),
+            "walk_network_pkl": file_stat_signature(GRAPH_PATH),
+            "worldpop_age65": file_stat_signature(WORLDPOP_CANONICAL_65),
+            "worldpop_age80": file_stat_signature(WORLDPOP_CANONICAL_80),
+            "geofabrik_zip": file_stat_signature(EXTERNAL_DIR / "geofabrik" / "hubei-latest-free.shp.zip"),
+            "accessibility_summary": file_stat_signature(PROCESSED_DIR / "accessibility_summary.json"),
+            "risk_summary": file_stat_signature(RISK_SUMMARY_PATH),
+            "recommendations": file_stat_signature(SITE_RECOMMENDATIONS_PATH),
         },
         ignored_keys=set(),
     )

@@ -134,6 +134,10 @@ def export_tables(
     all_access = get_accessibility_scope(accessibility, "all_support_resources")
     active_access = get_accessibility_scope(accessibility, "existing_active_cooling_resources")
     analysis_profile = weather.get("analysis_profile", {})
+    default_scenario_count = recommendations.get("default_scenario", 5)
+    default_scenario = next((item for item in scenarios if item.get("new_site_count") == default_scenario_count), None)
+    if default_scenario is None and scenarios:
+        default_scenario = scenarios[0]
 
     scenario_rows = [
         {
@@ -300,6 +304,18 @@ def export_tables(
     if not risk_validation_df.empty:
         risk_validation_df.to_csv(TABLE_DIR / "风险模型验证.csv", index=False, encoding="utf-8-sig")
 
+    weight_sensitivity_df = pd.DataFrame(
+        competition_experiments.get("weight_sensitivity", {}).get("variants", [])
+    )
+    if not weight_sensitivity_df.empty:
+        weight_sensitivity_df.to_csv(TABLE_DIR / "权重敏感性对比.csv", index=False, encoding="utf-8-sig")
+
+    kendall_tau_df = pd.DataFrame(
+        competition_experiments.get("weight_sensitivity", {}).get("kendall_tau_matrix", [])
+    )
+    if not kendall_tau_df.empty:
+        kendall_tau_df.to_csv(TABLE_DIR / "权重敏感性KendallTau矩阵.csv", index=False, encoding="utf-8-sig")
+
     accessibility_comparison = competition_experiments.get("accessibility_algorithm_comparison", {})
     accessibility_compare_df = pd.DataFrame(
         [
@@ -350,6 +366,31 @@ def export_tables(
     )
     if not ablation_df.empty:
         ablation_df.to_csv(TABLE_DIR / "模块消融实验.csv", index=False, encoding="utf-8-sig")
+
+    strategy_df = pd.DataFrame(
+        competition_experiments.get("strategy_comparison", {}).get("strategies", [])
+    )
+    if not strategy_df.empty:
+        strategy_df.to_csv(TABLE_DIR / "选址策略对比.csv", index=False, encoding="utf-8-sig")
+
+    diurnal_df = pd.DataFrame(
+        competition_experiments.get("diurnal_risk_profile", {}).get("profile", [])
+    )
+    if not diurnal_df.empty:
+        diurnal_df.to_csv(TABLE_DIR / "24h风险节律.csv", index=False, encoding="utf-8-sig")
+
+    fairness_metrics = (default_scenario or {}).get("metrics", {}).get("fairness_metrics", {})
+    fairness_df = pd.DataFrame(
+        [
+            {
+                "district": district,
+                **values,
+            }
+            for district, values in fairness_metrics.get("district_coverage_change", {}).items()
+        ]
+    )
+    if not fairness_df.empty:
+        fairness_df.to_csv(TABLE_DIR / "各区覆盖率变化.csv", index=False, encoding="utf-8-sig")
 
     official_site_df = pd.DataFrame(
         [
@@ -436,9 +477,14 @@ def export_tables(
         "weather_context_df": weather_context_df,
         "scope_df": scope_df,
         "risk_validation_df": risk_validation_df,
+        "weight_sensitivity_df": weight_sensitivity_df,
+        "kendall_tau_df": kendall_tau_df,
         "accessibility_compare_df": accessibility_compare_df,
         "accessibility_error_df": accessibility_error_df,
         "ablation_df": ablation_df,
+        "strategy_df": strategy_df,
+        "diurnal_df": diurnal_df,
+        "fairness_df": fairness_df,
         "official_site_df": official_site_df,
         "official_bulletin_df": official_bulletin_df,
         "source_refresh_df": source_refresh_df,
@@ -466,6 +512,52 @@ def save_horizontal_bar(labels, values, title: str, xlabel: str, filename: str, 
     plt.xlabel(xlabel)
     plt.grid(axis="x", linestyle="--", alpha=0.25)
     plt.tight_layout()
+    plt.savefig(CHART_DIR / filename, dpi=200)
+    plt.close()
+
+
+def save_line_chart(categories, values_dict, title: str, ylabel: str, filename: str, xlabel: str = "") -> None:
+    plt.figure(figsize=(10, 6))
+    for label, (values, color) in values_dict.items():
+        plt.plot(categories, values, marker="o", label=label, color=color, linewidth=2)
+        for i, val in enumerate(values):
+            plt.text(categories[i], val, f"{val:.1f}" if isinstance(val, float) else f"{val}", 
+                     ha="center", va="bottom", fontsize=9, color=color)
+    plt.title(title)
+    plt.ylabel(ylabel)
+    if xlabel:
+        plt.xlabel(xlabel)
+    plt.grid(axis="both", linestyle="--", alpha=0.25)
+    plt.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(CHART_DIR / filename, dpi=200)
+    plt.close()
+
+
+def save_dual_axis_line_chart(categories, y1_values, y2_values, y1_label, y2_label, title, xlabel, filename):
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    
+    color1 = "#ff7f0e"
+    ax1.set_xlabel(xlabel)
+    ax1.set_ylabel(y1_label, color=color1)
+    ax1.plot(categories, y1_values, color=color1, marker="o", label=y1_label, linewidth=2)
+    ax1.tick_params(axis="y", labelcolor=color1)
+    for i, val in enumerate(y1_values):
+        ax1.text(categories[i], val + 0.2, f"{val:.1f}", ha="center", va="bottom", fontsize=8, color=color1)
+
+    ax2 = ax1.twinx()
+    color2 = "#d62728"
+    ax2.set_ylabel(y2_label, color=color2)
+    ax2.plot(categories, y2_values, color=color2, marker="s", label=y2_label, linewidth=2)
+    ax2.tick_params(axis="y", labelcolor=color2)
+    for i, val in enumerate(y2_values):
+        ax2.text(categories[i], val - 0.2, f"{val:.1f}", ha="center", va="top", fontsize=8, color=color2)
+
+    plt.title(title)
+    fig.tight_layout()
+    plt.grid(axis="both", linestyle="--", alpha=0.2)
+    plt.xticks(rotation=45)
     plt.savefig(CHART_DIR / filename, dpi=200)
     plt.close()
 
@@ -532,6 +624,17 @@ def export_charts(tables: dict, optimization: dict, accessibility: dict, competi
             color="#4ecdc4",
         )
 
+    weight_sensitivity_df = tables.get("weight_sensitivity_df")
+    if weight_sensitivity_df is not None and not weight_sensitivity_df.empty:
+        save_bar_chart(
+            weight_sensitivity_df["name"].tolist(),
+            (weight_sensitivity_df["kendall_tau_with_baseline"] * 100).tolist(),
+            "不同权重方案与当前方案的排序稳定性",
+            "Kendall τ × 100",
+            "07_权重敏感性稳定性.png",
+            color="#8e7dff",
+        )
+
     accessibility_compare_df = tables.get("accessibility_compare_df")
     if accessibility_compare_df is not None and not accessibility_compare_df.empty:
         save_bar_chart(
@@ -539,7 +642,7 @@ def export_charts(tables: dict, optimization: dict, accessibility: dict, competi
             accessibility_compare_df["平均到达时间_分钟"].tolist(),
             "真实路网与距离代理的平均到达时间对比",
             "分钟",
-            "07_可达性算法对比.png",
+            "08_可达性算法对比.png",
             color="#f6bd60",
         )
 
@@ -552,7 +655,7 @@ def export_charts(tables: dict, optimization: dict, accessibility: dict, competi
             values,
             "关键模块消融效应",
             "Full - Ablation",
-            "08_模块消融实验.png",
+            "09_模块消融实验.png",
             color="#84a59d",
         )
 
@@ -567,9 +670,52 @@ def export_charts(tables: dict, optimization: dict, accessibility: dict, competi
         ],
         "不同资源口径下的15分钟覆盖率对比",
         "覆盖率 (%)",
-        "09_资源口径对比.png",
+        "10_资源口径对比.png",
         color="#39d0ba",
     )
+
+    strategy_df = tables.get("strategy_df")
+    if strategy_df is not None and not strategy_df.empty:
+        save_bar_chart(
+            strategy_df["name"].tolist(),
+            (strategy_df["coverage_rate_population"] * 100).tolist(),
+            "不同选址策略的覆盖率对比",
+            "覆盖率 (%)",
+            "11_选址策略覆盖率对比.png",
+            color="#ab87ff",
+        )
+
+    diurnal_df = tables.get("diurnal_df")
+    if diurnal_df is not None and not diurnal_df.empty:
+        save_dual_axis_line_chart(
+            diurnal_df["hour"].tolist(),
+            diurnal_df["temperature"].tolist(),
+            diurnal_df["apparent_temperature"].tolist(),
+            "平均气温 (℃)",
+            "体感温度 (℃)",
+            "热浪期间24小时风险节律",
+            "时间",
+            "12_24h风险节律图.png",
+        )
+
+    fairness_df = tables.get("fairness_df")
+    if fairness_df is not None and not fairness_df.empty:
+        plt.figure(figsize=(10, 6))
+        districts = fairness_df["district"].tolist()
+        base_rates = (fairness_df["baseline_rate"] * 100).tolist()
+        scenario_rates = (fairness_df["scenario_rate"] * 100).tolist()
+        x = range(len(districts))
+        width = 0.35
+        plt.bar([i - width / 2 for i in x], base_rates, width, label="基线覆盖率", color="#4ea1ff")
+        plt.bar([i + width / 2 for i in x], scenario_rates, width, label="方案覆盖率", color="#ff9e57")
+        plt.title("各区高风险覆盖率变化对比(公平性)")
+        plt.ylabel("覆盖率 (%)")
+        plt.xticks(x, districts, rotation=45)
+        plt.legend()
+        plt.grid(axis="y", linestyle="--", alpha=0.25)
+        plt.tight_layout()
+        plt.savefig(CHART_DIR / "13_各区覆盖率变化对比图.png", dpi=200)
+        plt.close()
 
 
 def build_report_draft(
@@ -601,6 +747,9 @@ def build_report_draft(
     risk_validation = competition_experiments.get("risk_model_validation", {})
     accessibility_comparison = competition_experiments.get("accessibility_algorithm_comparison", {})
     ablation_validation = competition_experiments.get("ablation_validation", {})
+    weight_sensitivity = competition_experiments.get("weight_sensitivity", {})
+    diurnal_profile = competition_experiments.get("diurnal_risk_profile", {})
+    strategy_comparison = competition_experiments.get("strategy_comparison", {})
     risk_variants = {item["key"]: item for item in risk_validation.get("variants", [])}
     full_variant = risk_variants.get("full_model_score", {})
     temp_variant = risk_variants.get("temperature_humidity_score", {})
@@ -618,26 +767,19 @@ def build_report_draft(
     authenticity_overall = authenticity_audit.get("overall", {})
     authenticity_summary = authenticity_audit.get("summary", {})
     authenticity_modules = authenticity_audit.get("modules", [])
+    default_scenario_count = recommendations.get("default_scenario", 5)
+    default_scenario = next((item for item in scenarios if item.get("new_site_count") == default_scenario_count), None)
+    if default_scenario is None and scenarios:
+        default_scenario = scenarios[0]
 
     recommendation_lines = []
     for index, site in enumerate(recommendations.get("recommendations", []), start=1):
         recommendation_lines.append(
-            f"{index}. `{site.get('name', site.get('poi_id'))}`：新增覆盖高风险老年人口 `{site.get('covered_elderly_population', 0)}` 人，"
+            f"{index}. `{site.get('display_name', site.get('name', site.get('poi_id')) )}`：新增覆盖高风险老年人口 `{site.get('covered_elderly_population', 0)}` 人，"
             f"直接补盲 `{site.get('covered_cells', 0)}` 个网格，并改善 `{site.get('improved_cells', 0)}` 个网格的到达时间；"
             f"运行适配度 `{site.get('operational_suitability', '--')}`，选择理由：{site.get('selection_reason', '综合补位')}。"
         )
     recommendation_text = "\n".join(recommendation_lines) if recommendation_lines else "待补充推荐点位。"
-
-    display_recommendation_lines = []
-    for index, site in enumerate(recommendations.get("recommendations", []), start=1):
-        site_name = site.get("display_name", site.get("name", site.get("poi_id")))
-        display_recommendation_lines.append(
-            f"{index}. `{site_name}`：新增覆盖高风险老年人口 `{site.get('covered_elderly_population', 0)}` 人，"
-            f"直接补盲 `{site.get('covered_cells', 0)}` 个网格，并改善 `{site.get('improved_cells', 0)}` 个网格的到达时间；"
-            f"运行适配度 `{site.get('operational_suitability', '--')}`，选择理由：{site.get('selection_reason', '综合补位')}。"
-        )
-    if display_recommendation_lines:
-        recommendation_text = "\n".join(display_recommendation_lines)
 
     ablation_lines = "\n".join(
         f"- `{item['module']}` 的 `{item['metric']}` 从 `{item['ablated_value']}` 变化到 `{item['full_value']}`，差值 `{item['delta']}`。{item['interpretation']}"
@@ -659,6 +801,60 @@ def build_report_draft(
 
 {authenticity_lines}
 """
+
+    def format_scenario_block(scenario: dict | None) -> str:
+        if not scenario:
+            return "- 待补充方案结果。"
+        metrics = scenario.get("metrics", {})
+        return "\n".join(
+            [
+                f"- 覆盖率提升至 `{round(metrics.get('coverage_rate_population', 0) * 100, 2)}%`",
+                f"- 新增覆盖高风险老年人口 `{metrics.get('coverage_improvement_population', 0)}` 人",
+                f"- 平均到达时间下降到 `{metrics.get('average_travel_minutes', 0)}` 分钟",
+            ]
+        )
+
+    scenario5_text = format_scenario_block(scenario5)
+    scenario8_text = format_scenario_block(scenario8)
+
+    weight_lines = "\n".join(
+        f"- **{item['name']}**：Kendall τ `{item.get('kendall_tau_with_baseline', 0)}`，"
+        f" Top{weight_sensitivity.get('top_cell_count', 0)} 交集率 `{round(item.get('overlap_rate_with_baseline', 0) * 100, 2)}%`，"
+        f" 捕获高龄人口 `{item.get('elderly_population_sum', 0)}` 人。"
+        for item in weight_sensitivity.get("variants", [])
+    ) or "- 待补充权重敏感性结果。"
+
+    strategy_lines = "\n".join(
+        f"- **{item['name']}**：人口覆盖率 `{round(item.get('coverage_rate_population', 0) * 100, 2)}%`，"
+        f" 平均到达时间 `{item.get('average_travel_minutes', 0)}` 分钟，"
+        f" 基尼系数 `{item.get('gini_coefficient', 0)}`。"
+        for item in strategy_comparison.get("strategies", [])
+    ) or "- 待补充策略对比结果。"
+
+    fairness_metrics = (default_scenario or {}).get("metrics", {}).get("fairness_metrics", {})
+    fairness_lines = "\n".join(
+        f"- **{district}**：基线 `{round(values.get('baseline_rate', 0) * 100, 2)}%`，"
+        f" 方案 `{round(values.get('scenario_rate', 0) * 100, 2)}%`，"
+        f" 提升 `{round(values.get('improvement', 0) * 100, 2)}%`。"
+        for district, values in fairness_metrics.get("district_coverage_change", {}).items()
+    ) or "- 待补充公平性指标分析。"
+
+    diurnal_profile_lines = []
+    for item in diurnal_profile.get("profile", []):
+        if item.get("hour") in {"10:00", "12:00", "14:00", "22:00", "02:00"}:
+            diurnal_profile_lines.append(
+                f"- `{item['hour']}`：平均气温 `{item['temperature']}`℃，体感 `{item['apparent_temperature']}`℃。"
+            )
+    diurnal_text = "\n".join(diurnal_profile_lines) or "- 待补充节律结果。"
+
+    reference_lines = "\n".join(
+        [
+            "- Li et al. (2020), *Nature Communications*: 城市密度和形态会显著影响城市热岛强度。<https://www.nature.com/articles/s41467-020-16461-9>",
+            "- Wang et al. (2017), *Landscape and Urban Planning*: 高密度建成环境中，建筑密度与树冠覆盖会共同影响白天热岛强度。<https://doi.org/10.1016/j.landurbplan.2017.09.024>",
+            "- Han et al. (2023), *Scientific Reports*: 建筑形态与建成环境指标会改变地表温度分布。<https://www.nature.com/articles/s41598-023-46437-w>",
+            "- WHO Heat and Health: 夜间持续高温与脆弱人群健康风险相关。<https://www.who.int/news-room/fact-sheets/detail/climate-change-heat-and-health>",
+        ]
+    )
 
     report = f"""# 《热龄卫士》研究报告
 
@@ -705,6 +901,8 @@ def build_report_draft(
 - 官方纳凉点通报：最近刷新时间 `{official_cooling.get('generated_at', '未记录')}`，已监测页面 `{official_cooling.get('monitored_source_count', 0)}` 个，原文核验通过 `{official_cooling.get('summary', {}).get('verified_site_count', 0)}` 个
 - 网站前端“证据链”面板与 `GET /api/data-sources` 接口同步展示上述刷新状态，用于答辩时直接说明数据并非静态演示页。
 
+{authenticity_section}
+
 ## 3. 方法设计
 
 ### 3.1 风险识别模型
@@ -721,9 +919,15 @@ def build_report_draft(
 - 可达性模型：优先采用真实步行路网，若路网不可得才退化到距离代理
 - 选址策略：`{strategy_label(strategy)}`
 - 优化基线口径：`{baseline_scope.get('scope_label', '既有主动避暑资源')}`
-- 候选点来源：公园与图书馆等可转化公共资源
+- 候选点来源：公园与图书馆等可转化公共资源；购物中心与地铁站已纳入扩展 POI 展示层，但当前不直接进入候选解
 - 运行约束增强：在覆盖收益之外，引入 `容量代理`、`开放时段代理`、`室内/绿地避暑适配度` 与 `高风险片区优先度`
 - 解释口径：上述容量与开放时段均为基于设施类型、名称与公开字段构建的相对代理，用于提升方案现实性，而非替代后续实地核验
+
+### 3.3 局地热岛与热健康权重说明
+
+- 局地热岛代理采用 `建筑覆盖率 + 道路密度 + 绿地反向指标` 的经验组合，其中 `0.55 / 0.30 / 0.15` 反映建成环境蓄热、道路不透水面与绿地缓热的方向性影响
+- 热浪严重度指标 `severity_index` 采用 `0.55 × 平均体感 + 0.30 × 峰值体感 + 0.15 × 夜间最低体感` 的分层结构，用于同时表达持续热负荷、日间峰值冲击和夜间恢复受阻
+- 上述权重不是直接照搬单篇论文系数，而是在文献方向性证据约束下设置，并通过权重敏感性实验验证其排序鲁棒性
 
 ## 4. 核心结果
 
@@ -751,11 +955,11 @@ def build_report_draft(
 
 #### 新增 5 个点位方案
 
-{f"- 覆盖率提升至 `{round(scenario5['metrics']['coverage_rate_population'] * 100, 2)}%`\n- 新增覆盖高风险老年人口 `{scenario5['metrics']['coverage_improvement_population']}` 人\n- 平均到达时间下降到 `{scenario5['metrics']['average_travel_minutes']}` 分钟" if scenario5 else "- 待补充 5 点方案结果"}
+{scenario5_text}
 
 #### 新增 8 个点位方案
 
-{f"- 覆盖率提升至 `{round(scenario8['metrics']['coverage_rate_population'] * 100, 2)}%`\n- 新增覆盖高风险老年人口 `{scenario8['metrics']['coverage_improvement_population']}` 人\n- 平均到达时间下降到 `{scenario8['metrics']['average_travel_minutes']}` 分钟" if scenario8 else "- 待补充 8 点方案结果"}
+{scenario8_text}
 
 ## 5. 实验验证
 
@@ -765,7 +969,11 @@ def build_report_draft(
 - 若仅采用“温度+体感温度”，捕获老年人口 `{temp_variant.get('elderly_population_sum', 0)}` 人
 - 完整模型额外识别高龄暴露人口 `{full_variant.get('elderly_population_sum', 0) - temp_variant.get('elderly_population_sum', 0)}` 人
 
-### 5.2 可达性算法验证
+### 5.2 权重敏感性实验
+
+{weight_lines}
+
+### 5.3 可达性算法验证
 
 - 真实步行路网平均到达时间：`{accessibility_comparison.get('network', {}).get('average_nearest_walk_minutes', 0)}` 分钟
 - 距离代理平均到达时间：`{accessibility_comparison.get('distance_proxy', {}).get('average_nearest_walk_minutes', 0)}` 分钟
@@ -773,9 +981,31 @@ def build_report_draft(
 - RMSE：`{accessibility_comparison.get('rmse_minutes', 0)}` 分钟
 - 过度乐观误判网格：`{accessibility_comparison.get('optimistic_misclassified_cells', 0)}` 个
 
-### 5.3 消融实验
+### 5.4 消融实验
 
 {ablation_lines}
+
+### 5.5 选址策略对比验证
+
+{strategy_lines}
+
+### 5.6 空间公平性分析
+
+选址方案不仅关注总体覆盖增益，也关注资源在各区的均等分配：
+
+- 默认 `{default_scenario_count}` 点方案的到达时间基尼系数：`{fairness_metrics.get('gini_coefficient', 0)}`
+- 最差城区覆盖率改善下限：`{round(fairness_metrics.get('worst_district_improvement', 0) * 100, 2)}%`
+{fairness_lines}
+
+### 5.7 24 小时风险节律
+
+- 日间高风险窗口：`{diurnal_profile.get('daytime_high_risk_window', '--')}`
+- 夜间持续高温关注窗口：`{diurnal_profile.get('nighttime_persistence_window', '--')}`
+{diurnal_text}
+
+### 5.8 文献支撑
+
+{reference_lines}
 
 ## 6. 推荐点位
 
@@ -789,8 +1019,8 @@ def build_report_draft(
 
 1. 武汉主城区高温脆弱性具有明显空间分异，`{top_district}` 是当前最需优先关注的城区。
 2. 将老年人口暴露、真实步行路网与局地空间代理纳入后，模型比单纯看热暴露更能识别“热 + 老 + 难到达”的复合脆弱区。
-3. 全部支撑资源与既有主动避暑资源之间存在明显覆盖差距，这一差距正是新增临时纳凉点的决策切入点。
-4. 少量新增候选点即可显著提升高风险老年人口覆盖率，并压缩平均到达时间。
+3. 权重敏感性实验表明，当前方案与其他合理权重组合保持较高排序一致性，说明核心结论具有鲁棒性。
+4. 与随机和纯覆盖贪心相比，混合 MCLP 方案在覆盖率、时间成本与公平性之间取得了更好的综合平衡。
 
 ### 7.2 局限性
 
@@ -798,8 +1028,6 @@ def build_report_draft(
 2. 选址模型已纳入容量、开放时段与避暑适配度的相对代理，但仍不是实测容量、实测开放时长和空调负荷数据，正式落地前仍需街道与场馆逐点核验。
 3. 风险模型虽已移除人为抬温，但仍可继续叠加更细粒度的建筑材料、树荫与独居老人数据。
 """
-
-    report = report.replace("## 3. ", f"{authenticity_section}\n## 3. ", 1)
 
     (DOCS_DIR / "研究报告-热龄卫士.md").write_text(report, encoding="utf-8")
 

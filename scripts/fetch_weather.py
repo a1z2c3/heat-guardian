@@ -60,18 +60,19 @@ def average(values: list[float]) -> float | None:
     return round(sum(valid) / len(valid), 2)
 
 
-def build_trend(payload: dict, limit: int | None = None) -> list[dict]:
+def build_trend(payload: dict, limit: int | None = None, start: int = 0) -> list[dict]:
     hourly = payload.get("hourly", {})
     times = hourly.get("time", [])
     temperatures = hourly.get("temperature_2m", [])
     apparent_temperatures = hourly.get("apparent_temperature", [])
 
     size = min(len(times), len(temperatures), len(apparent_temperatures))
+    start = max(0, min(start, size))
     if limit is not None:
-        size = min(size, limit)
+        size = min(size, start + limit)
 
     trend = []
-    for index in range(size):
+    for index in range(start, size):
         trend.append(
             {
                 "time": times[index],
@@ -82,29 +83,72 @@ def build_trend(payload: dict, limit: int | None = None) -> list[dict]:
     return trend
 
 
-def build_forecast_summary(payload: dict) -> dict:
+def parse_hourly_timestamp(value: str, timezone) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is not None and timezone is not None:
+        parsed = parsed.astimezone(timezone)
+    return parsed.replace(tzinfo=None)
+
+
+def find_current_hour_index(times: list[str], now: datetime) -> int | None:
+    if not times:
+        return None
+
+    timezone = now.tzinfo
+    target = now.replace(minute=0, second=0, microsecond=0).replace(tzinfo=None)
+    parsed_times = []
+    for index, value in enumerate(times):
+        parsed = parse_hourly_timestamp(value, timezone)
+        if parsed is not None:
+            parsed_times.append((index, parsed))
+
+    if not parsed_times:
+        return None
+
+    completed_or_current = [(index, parsed) for index, parsed in parsed_times if parsed <= target]
+    if completed_or_current:
+        return max(completed_or_current, key=lambda item: item[1])[0]
+
+    return min(parsed_times, key=lambda item: abs((item[1] - target).total_seconds()))[0]
+
+
+def value_at(values: list, index: int | None):
+    if index is None or index < 0 or index >= len(values):
+        return None
+    return values[index]
+
+
+def build_forecast_summary(payload: dict, now: datetime) -> dict:
     hourly = payload.get("hourly", {})
+    times = hourly.get("time", [])
     temperatures = hourly.get("temperature_2m", [])
     humidity = hourly.get("relative_humidity_2m", [])
     apparent_temperatures = hourly.get("apparent_temperature", [])
     precipitation = hourly.get("precipitation", [])
     wind_speed = hourly.get("wind_speed_10m", [])
 
-    next_24_temperatures = temperatures[:24]
-    next_72_temperatures = temperatures[:72]
-    next_24_apparent = apparent_temperatures[:24]
-    next_72_apparent = apparent_temperatures[:72]
-    next_24_humidity = humidity[:24]
-    next_72_precipitation = precipitation[:72]
-    next_72_wind = wind_speed[:72]
-    trend = build_trend(payload, limit=72)
+    current_index = find_current_hour_index(times, now)
+    window_start = current_index if current_index is not None else 0
+    next_24_temperatures = temperatures[window_start : window_start + 24]
+    next_72_temperatures = temperatures[window_start : window_start + 72]
+    next_24_apparent = apparent_temperatures[window_start : window_start + 24]
+    next_72_apparent = apparent_temperatures[window_start : window_start + 72]
+    next_24_humidity = humidity[window_start : window_start + 24]
+    next_72_precipitation = precipitation[window_start : window_start + 72]
+    next_72_wind = wind_speed[window_start : window_start + 72]
+    trend = build_trend(payload, limit=72, start=window_start)
 
     return {
         "source": "Open-Meteo Forecast API",
         "generated_at": current_timestamp(),
         "timezone": payload.get("timezone"),
-        "current_temperature": temperatures[0] if temperatures else None,
-        "current_humidity": humidity[0] if humidity else None,
+        "current_time": value_at(times, current_index),
+        "current_temperature": value_at(temperatures, current_index),
+        "current_humidity": value_at(humidity, current_index),
+        "current_apparent_temperature": value_at(apparent_temperatures, current_index),
         "next_24h_max_temperature": max(next_24_temperatures) if next_24_temperatures else None,
         "next_72h_max_temperature": max(next_72_temperatures) if next_72_temperatures else None,
         "next_24h_max_apparent_temperature": max(next_24_apparent) if next_24_apparent else None,
@@ -351,7 +395,7 @@ def main() -> None:
         forecast_payload = forecast_future.result()
         archive_payload, archive_was_fetched = archive_future.result()
 
-    forecast_summary = build_forecast_summary(forecast_payload)
+    forecast_summary = build_forecast_summary(forecast_payload, now)
     historical_case = find_hottest_window(archive_payload, season_year)
 
     analysis_profile, risk_context_label = choose_analysis_profile(forecast_summary, historical_case)
@@ -380,6 +424,8 @@ def main() -> None:
         },
         "current_temperature": forecast_summary.get("current_temperature"),
         "current_humidity": forecast_summary.get("current_humidity"),
+        "current_time": forecast_summary.get("current_time"),
+        "current_apparent_temperature": forecast_summary.get("current_apparent_temperature"),
         "next_24h_max_temperature": forecast_summary.get("next_24h_max_temperature"),
         "next_72h_max_temperature": forecast_summary.get("next_72h_max_temperature"),
         "next_24h_max_apparent_temperature": forecast_summary.get("next_24h_max_apparent_temperature"),

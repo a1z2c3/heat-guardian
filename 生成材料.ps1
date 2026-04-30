@@ -5,4 +5,4 @@ if (!(Test-Path ".venv")) {
 }
 
 .\.venv\Scripts\python scripts\export_report_assets.py
-.\.venv\Scripts\python scripts\build_submission_package.py
+

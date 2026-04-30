@@ -77,11 +77,12 @@ function Stop-ProjectPortListeners {
 }
 
 if (!(Test-Path ".venv")) {
+  Write-Host "Creating Python virtual environment..."
   python -m venv .venv
 }
 
-if (!(Test-Path $pythonExe) -or !(Test-Path $uvicornExe)) {
-  throw "虚拟环境不完整，请删除 .venv 后重新运行 .\\启动项目.ps1"
+if (!(Test-Path $pythonExe)) {
+  throw "Virtual environment is incomplete: missing .\.venv\Scripts\python.exe. Delete .venv and run the startup script again."
 }
 
 $requirementsHash = Get-RequirementsHash
@@ -92,13 +93,19 @@ else {
   ""
 }
 
-if ($savedRequirementsHash -ne $requirementsHash) {
+$needsDependencyInstall = ($savedRequirementsHash -ne $requirementsHash) -or !(Test-Path $uvicornExe)
+
+if ($needsDependencyInstall) {
   Write-Host "Installing Python dependencies..."
   & $pythonExe -m pip install --disable-pip-version-check -r requirements.txt
   Set-Content -Path $requirementsStamp -Value $requirementsHash -Encoding ASCII
 }
 else {
   Write-Host "Python dependencies unchanged. Skipping pip install."
+}
+
+if (!(Test-Path $uvicornExe)) {
+  throw "Python dependencies were not installed correctly: missing .\.venv\Scripts\uvicorn.exe."
 }
 
 Stop-ExistingAppServer

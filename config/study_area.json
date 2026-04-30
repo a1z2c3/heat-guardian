@@ -16,8 +16,8 @@
       "east": 114.5100
     },
     "grid": {
-      "rows": 24,
-      "cols": 32
+      "rows": 48,
+      "cols": 64
     },
     "district_hotspots": [
       {
@@ -93,6 +93,26 @@
       "tag_key": "leisure",
       "tag_value": "park",
       "label": "公园"
+    },
+    {
+      "name": "shopping_mall",
+      "tag_key": "shop",
+      "tag_value": "mall",
+      "label": "购物中心"
+    },
+    {
+      "name": "subway_station",
+      "tag_key": "railway",
+      "tag_value": "station",
+      "label": "地铁站",
+      "match_any": [
+        {
+          "station": "subway"
+        },
+        {
+          "subway": "yes"
+        }
+      ]
     }
   ],
   "service_thresholds_km": {
